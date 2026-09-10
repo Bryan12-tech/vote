@@ -274,7 +274,7 @@ function Dashboard({ cb, user, stations, onAction }: {
   const todayStr = new Date().toISOString().slice(0, 10)
   const todayEntries = cb.entries.filter(e => e.type === "payment" && e.timestamp.startsWith(todayStr))
   const todaySpend = todayEntries.reduce((s, e) => s + e.debit, 0)
-  const stationEntries = cb.entries.filter(e => e.station === user.station && e.type === "payment")
+  const stationEntries = cb.entries.filter(e => e.type === "payment")
   const stationTotal = stationEntries.reduce((s, e) => s + e.debit, 0)
   const recentEntries = cb.entries.slice(-5).reverse()
   const pct = cb.openingBalance > 0 ? Math.min(100, (bal / cb.openingBalance) * 100) : 0
@@ -292,7 +292,7 @@ function Dashboard({ cb, user, stations, onAction }: {
       {/* Page title */}
       <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
-          {user.station} · Fiscal Year 2039
+          {user.role === "admin" ? "Central Finance" : "All Stations"} · Fiscal Year 2039
         </div>
         <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Finance Dashboard</h1>
       </div>
@@ -335,7 +335,7 @@ function Dashboard({ cb, user, stations, onAction }: {
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard label="Today's Expenditure" value={`${CUR} ${fmtMoney(todaySpend)}`} sub={`${todayEntries.length} transaction${todayEntries.length !== 1 ? "s" : ""}`} color="#1e40af"/>
-        <StatCard label="My Station Total" value={`${CUR} ${fmtMoney(stationTotal)}`} sub={`${stationEntries.length} entries`} color="#047857"/>
+        <StatCard label="Total Expenditure" value={`${CUR} ${fmtMoney(stationTotal)}`} sub={`${stationEntries.length} entries · all stations`} color="#047857"/>
         <StatCard label="Total Entries" value={cb.entries.filter(e => e.type === "payment").length.toString()} sub="All stations" />
         <StatCard label="Stations Active" value={[...new Set(cb.entries.map(e => e.station))].length.toString()} sub={`of ${stations.length} stations`} color="#c9a227"/>
       </div>
@@ -387,10 +387,11 @@ function Dashboard({ cb, user, stations, onAction }: {
 // ══════════════════════════════════════════════════════════════════════════
 // NEW VOTEBOOK ENTRY
 // ══════════════════════════════════════════════════════════════════════════
-function NewEntryForm({ user, cb, voteItems, onSave }: {
-  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; onSave: (p: PaymentPayload) => Promise<CashbookEntry>
+function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
+  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: string[]; onSave: (p: PaymentPayload) => Promise<CashbookEntry>
 }) {
   const [selectedVote, setSelectedVote] = useState<VoteItem | null>(null)
+  const [stationName, setStationName] = useState("")
   const [amount, setAmount] = useState("")
   const [payee, setPayee] = useState("")
   const [purpose, setPurpose] = useState("")
@@ -405,6 +406,7 @@ function NewEntryForm({ user, cb, voteItems, onSave }: {
 
   function validate() {
     const e: Record<string, string> = {}
+    if (!stationName) e.station = "Please select the station this payment belongs to"
     if (!selectedVote) e.vote = "Please select a vote item"
     if (!amount || isNaN(amt) || amt <= 0) e.amount = "Enter a valid amount greater than zero"
     if (amt > bal) e.amount = `Insufficient balance. Available: TSh ${fmtMoney(bal)}`
@@ -426,9 +428,10 @@ function NewEntryForm({ user, cb, voteItems, onSave }: {
         purpose: purpose.trim(),
         receiptNo: receiptNo.trim(),
         cashbookRef: cashbookRef.trim(),
+        station: stationName,
       })
       setSuccess(entry)
-      setSelectedVote(null); setAmount(""); setPayee(""); setPurpose(""); setReceiptNo(""); setCashbookRef("")
+      setStationName(""); setSelectedVote(null); setAmount(""); setPayee(""); setPurpose(""); setReceiptNo(""); setCashbookRef("")
       setTimeout(() => setSuccess(null), 6000)
     } catch (err) {
       setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to post entry. Please try again." }))
@@ -442,7 +445,7 @@ function NewEntryForm({ user, cb, voteItems, onSave }: {
       <div className="max-w-2xl">
         <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
           <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
-            {user.station} · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
+            {stationName || "All Stations"} · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
           </div>
           <h1 className="font-serif text-2xl font-bold text-[#1a2744]">New Votebook Entry</h1>
         </div>
@@ -477,6 +480,21 @@ function NewEntryForm({ user, cb, voteItems, onSave }: {
         )}
 
         <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
+          {/* Station */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+              Station <span className="text-red-500">*</span>
+            </label>
+            <select
+              className={`gov-input ${errors.station ? "gov-input-error" : ""}`}
+              value={stationName}
+              onChange={e => { setStationName(e.target.value); setErrors(p => ({ ...p, station: "" })) }}>
+              <option value="">— Select Station —</option>
+              {stations.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {errors.station && <p className="font-sans text-xs text-red-600 mt-1">{errors.station}</p>}
+          </div>
+
           {/* Vote selector */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
@@ -567,8 +585,9 @@ function NewEntryForm({ user, cb, voteItems, onSave }: {
             <div>
               <p className="font-sans text-xs text-[#8a96af]">
                 Posting as <strong className="text-[#1a2744]">{user.name}</strong>
+                {stationName ? <> for <strong className="text-[#1a2744]">{stationName}</strong></> : null}
               </p>
-              <p className="font-sans text-xs text-[#8a96af]">{user.station}</p>
+              <p className="font-sans text-xs text-[#8a96af]">Shared cashbook · all stations</p>
             </div>
             <button type="submit" className="gov-btn-primary" disabled={posting}>{posting ? "Posting…" : "Post Entry"}</button>
           </div>
@@ -710,8 +729,8 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: string[
 // ══════════════════════════════════════════════════════════════════════════
 // VOTEBOOK RECORDS (votebook entries only, by station)
 // ══════════════════════════════════════════════════════════════════════════
-function VotebookRecords({ cb, user, stations, voteItems }: { cb: CashbookState; user: SessionUser; stations: string[]; voteItems: VoteItem[] }) {
-  const [filterStation, setFilterStation] = useState(user.role === "admin" ? "all" : user.station)
+function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stations: string[]; voteItems: VoteItem[] }) {
+  const [filterStation, setFilterStation] = useState("all")
   const [filterVote, setFilterVote] = useState("all")
   const [search, setSearch] = useState("")
 
@@ -739,12 +758,10 @@ function VotebookRecords({ cb, user, stations, voteItems }: { cb: CashbookState;
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4">
-        {user.role === "admin" && (
-          <select className="gov-input" style={{ width: "auto" }} value={filterStation} onChange={e => setFilterStation(e.target.value)}>
-            <option value="all">All Stations</option>
-            {stations.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        )}
+        <select className="gov-input" style={{ width: "auto" }} value={filterStation} onChange={e => setFilterStation(e.target.value)}>
+          <option value="all">All Stations</option>
+          {stations.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
         <select className="gov-input" style={{ width: "auto" }} value={filterVote} onChange={e => setFilterVote(e.target.value)}>
           <option value="all">All Vote Codes</option>
           {uniqueCodes.map(c => {
@@ -1175,14 +1192,14 @@ export default function App() {
         )}
 
         {view === "dashboard" && <Dashboard cb={cb} user={user} stations={stations} onAction={setView} />}
-        {view === "new"       && <NewEntryForm user={user} cb={cb} voteItems={voteItems} onSave={addPayment} />}
+        {view === "new"       && <NewEntryForm user={user} cb={cb} voteItems={voteItems} stations={stations} onSave={addPayment} />}
         {view === "cashbook"  && <CashbookLedger cb={cb} stations={stations} />}
-        {view === "votebook"  && <VotebookRecords cb={cb} user={user} stations={stations} voteItems={voteItems} />}
+        {view === "votebook"  && <VotebookRecords cb={cb} stations={stations} voteItems={voteItems} />}
         {view === "topup"     && user.role === "admin" && (
           <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} />
         )}
         {view === "users"     && user.role === "admin" && (
-          <UsersAdmin token={token!} user={user} stations={stations} />
+          <UsersAdmin token={token!} user={user} />
         )}
         {view === "summary"   && user.role === "admin" && <SummaryReport cb={cb} />}
       </div>

@@ -3,10 +3,10 @@ import { api, type SessionUser, type UserRecord, type UserPayload } from "./api"
 
 // ══════════════════════════════════════════════════════════════════════════
 // SYSTEM USERS — ADMINISTRATOR (CENTRAL FINANCE) ONLY
-// The administrator creates officer accounts and assigns each officer a station.
+// Officers get access to all stations — they can post votebook payments for any.
 // ══════════════════════════════════════════════════════════════════════════
-export default function UsersAdmin({ token, user, stations }: {
-  token: string; user: SessionUser; stations: string[]
+export default function UsersAdmin({ token, user }: {
+  token: string; user: SessionUser
 }) {
   const [records, setRecords] = useState<UserRecord[]>([])
   const [err, setErr] = useState("")
@@ -18,7 +18,6 @@ export default function UsersAdmin({ token, user, stations }: {
   const [fUsername, setFUsername] = useState("")
   const [fPassword, setFPassword] = useState("")
   const [fRole, setFRole] = useState<"officer" | "admin">("officer")
-  const [fStation, setFStation] = useState("")
 
   async function refresh() {
     try {
@@ -36,14 +35,14 @@ export default function UsersAdmin({ token, user, stations }: {
   function resetForm() {
     setEditing(null)
     setFName(""); setFUsername(""); setFPassword("")
-    setFRole("officer"); setFStation("")
+    setFRole("officer")
     setErr(""); setOk("")
   }
 
   function startEdit(u: UserRecord) {
     setEditing(u)
     setFName(u.name); setFUsername(u.username); setFPassword("")
-    setFRole(u.role); setFStation(u.station === "Central Finance" ? "" : u.station)
+    setFRole(u.role)
     setErr(""); setOk("")
   }
 
@@ -52,11 +51,11 @@ export default function UsersAdmin({ token, user, stations }: {
     if (!fName.trim()) { setErr("Full name is required."); return }
     if (!editing && !fUsername.trim()) { setErr("Username is required."); return }
     if (!editing && fPassword.length < 6) { setErr("Password must be at least 6 characters."); return }
-    if (fRole === "officer" && !fStation.trim()) { setErr("Please assign the officer to a station."); return }
 
+    // Officers are granted access to ALL stations; admins are always Central Finance.
     const payload: UserPayload = { name: fName.trim(), role: fRole }
     if (fPassword) payload.password = fPassword
-    payload.station = fRole === "admin" ? "Central Finance" : fStation.trim()
+    payload.station = fRole === "admin" ? "Central Finance" : ""
 
     try {
       if (editing) {
@@ -171,16 +170,13 @@ export default function UsersAdmin({ token, user, stations }: {
           </div>
           {fRole === "admin" ? (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Station</label>
-              <input className="gov-input" value="Central Finance" disabled/>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Access</label>
+              <input className="gov-input" value="Central Finance — balances & credits only" disabled/>
             </div>
           ) : (
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Assigned Station</label>
-              <select className="gov-input" value={fStation} onChange={e => setFStation(e.target.value)}>
-                <option value="">— Select Station —</option>
-                {stations.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Access</label>
+              <input className="gov-input" value="All Stations — can post payments for any station" disabled/>
             </div>
           )}
         </div>
@@ -210,7 +206,7 @@ export default function UsersAdmin({ token, user, stations }: {
                 <div className="min-w-0 flex-1">
                   <div className="font-sans font-semibold text-sm text-[#1a2744]">{u.name}</div>
                   <div className="font-mono text-[10px] text-[#8a96af] mt-0.5">
-                    {u.username} · {u.station}
+                    {u.username} · {(u.role === "admin" ? u.station : "All Stations")}
                   </div>
                 </div>
                 <span className={`chip shrink-0 ${u.role === "admin" ? "chip-amber" : "chip-blue"}`}>
@@ -236,7 +232,7 @@ export default function UsersAdmin({ token, user, stations }: {
       </div>
 
       <p className="font-mono text-[10px] text-[#8a96af] mt-4 uppercase tracking-widest">
-        New officers are assigned a station at creation — they sign in with just their username and password.
+        New officers get access to <strong>all stations</strong> — they can post votebook payments for any station and pick the station on each entry.
       </p>
     </div>
   )

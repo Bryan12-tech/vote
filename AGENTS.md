@@ -25,17 +25,17 @@ React + Vite + Tailwind CSS frontend with a Node/Express + PostgreSQL backend fo
 ## Data model
 
 - `stations` — police stations (seeded with the six Pemba stations)
-- `users` — bcrypt-hashed credentials; roles: `admin` / `officer`; each account carries its assigned `station` (admins are always `Central Finance`)
+- `users` — bcrypt-hashed credentials; roles: `admin` / `officer`. Officers have access to **all stations** (they pick the station on each payment entry); admin accounts are always `Central Finance`
 - `vote_items` — votebook master list
 - `cashbook_entries` — shared cashbook ledger; the running `balance` is computed server-side inside a transaction guarded by a Postgres advisory lock
 - `cashbook_settings` — single row holding the opening balance
 
 ## Permission model (enforced server-side)
 
-- All stations share one cashbook; officers post payment (debit) entries against the shared balance
+- All stations share one cashbook; officers post payment (debit) entries against the shared balance — **any officer can post a payment for any station** (the station is chosen per entry and validated server-side)
 - Credits (top-ups) and opening-balance changes require an admin session with station `Central Finance`
 - Payment amounts are validated against the real balance server-side; overdrafts are rejected
-- **User management is admin-only** (`GET/POST/PUT/DELETE /api/users`, Central Finance sessions only): the administrator creates officer accounts and assigns each officer a station. Officers sign in with just username + password — the station comes from the account, so an officer can no longer pick any station at login
+- **User management is admin-only** (`GET/POST/PUT/DELETE /api/users`, Central Finance sessions only): the administrator creates officer accounts. Officers sign in with just username + password, and get access to all stations
 
 ## Dependencies
 

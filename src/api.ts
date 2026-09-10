@@ -50,6 +50,7 @@ export interface PaymentPayload {
   purpose: string
   receiptNo: string
   cashbookRef: string
+  station: string
 }
 
 export interface CreditPayload {

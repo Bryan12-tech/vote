@@ -170,19 +170,9 @@ app.post("/api/login", async (req, res, next) => {
       throw new HttpError(401, "Invalid credentials. Please check your username and password.")
     }
 
-    // The station belongs to the account, not the sign-in form. The administrator
-    // creates officer accounts and assigns each one to a station (Central Finance
-    // manages this). Admins always sign in at Central Finance.
-    let sessionStation = u.station || ""
-    if (u.role === "admin") {
-      sessionStation = CENTRAL_FINANCE
-    }
-    if (u.role !== "admin" && sessionStation === CENTRAL_FINANCE) {
-      throw new HttpError(403, "Only the administrator signs in at Central Finance.")
-    }
-    if (!sessionStation) {
-      throw new HttpError(400, "This account has no station assigned. Contact the administrator at Central Finance.")
-    }
+    // Officers can post votebook payments for any station — the station is chosen
+    // per entry. The session records access scope only; admins are Central Finance.
+    const sessionStation = u.role === "admin" ? CENTRAL_FINANCE : "All Stations"
 
     const token = jwt.sign(
       { username: u.username, name: u.name, role: u.role, station: sessionStation },
@@ -222,13 +212,17 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
     if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
     if (!String(payee || "").trim()) throw new HttpError(400, "Payee name is required.")
     if (!String(purpose || "").trim()) throw new HttpError(400, "Purpose / description is required.")
+    // Officers can post for any station — the station is chosen per entry.
+    const station = String(req.body?.station || "").trim()
+    if (!station) throw new HttpError(400, "Please select the station this payment belongs to.")
+    await assertKnownStation(station)
     const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [String(voteCode || "")])).rows[0]
     if (!vote) throw new HttpError(400, "Please select a valid vote item.")
 
     const entry = await insertEntry({
       type: "payment",
       description: vote.description,
-      station: req.user.station,
+      station,
       officer: req.user.username,
       officerName: req.user.name,
       voteCode: vote.code,
@@ -361,15 +355,9 @@ app.post("/api/users", auth, requireCentralFinanceAdmin, async (req, res, next) 
     if (!data.name) throw new HttpError(400, "Full name is required.")
 
     const role = data.role || "officer"
-    const station = role === "admin" ? CENTRAL_FINANCE : data.station
-    if (role === "admin") {
-      if (data.station && data.station !== CENTRAL_FINANCE) {
-        throw new HttpError(400, "Administrator accounts always sign in at Central Finance.")
-      }
-    } else {
-      if (!station) throw new HttpError(400, "Please assign the officer to a police station.")
-      await assertKnownStation(station)
-    }
+    // Officers can post votebook payments for ANY station, so no station is
+    // assigned to an officer account. Admins are always Central Finance.
+    const station = role === "admin" ? CENTRAL_FINANCE : ""
 
     const hash = await bcrypt.hash(data.password, 10)
     const r = await pool.query(
@@ -399,17 +387,8 @@ app.put("/api/users/:username", auth, requireCentralFinanceAdmin, async (req, re
 
     const name = data.name ?? current.name
     const role = data.role ?? current.role
-    let station = data.station ?? current.station
-
-    if (role === "admin") {
-      station = CENTRAL_FINANCE
-    } else {
-      if (!station) throw new HttpError(400, "Please assign the officer to a police station.")
-      if (station === CENTRAL_FINANCE) {
-        throw new HttpError(400, "Only administrator accounts sign in at Central Finance.")
-      }
-      await assertKnownStation(station)
-    }
+    // Officers can post for any station; admins are always Central Finance.
+    const station = role === "admin" ? CENTRAL_FINANCE : ""
 
     // Guards: an admin cannot change their own role, and at least one admin must remain.
     if (current.username === req.user.username && role !== "admin") {

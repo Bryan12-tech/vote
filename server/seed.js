@@ -12,10 +12,10 @@ const STATIONS = [
 ]
 
 const USERS = [
-  { username: "admin",    password: "admin123", role: "admin",   name: "Chief Finance Officer", station: "Central Finance" },
-  { username: "officer1", password: "pass1234", role: "officer", name: "Sgt. M. Banda",         station: "Mkoani" },
-  { username: "officer2", password: "pass1234", role: "officer", name: "Cpl. T. Phiri",         station: "Chakechake" },
-  { username: "officer3", password: "pass1234", role: "officer", name: "Insp. J. Moyo",         station: "Wete" },
+  { username: "admin",    password: "admin123", role: "admin",   name: "Chief Finance Officer" },
+  { username: "officer1", password: "pass1234", role: "officer", name: "Sgt. M. Banda" },
+  { username: "officer2", password: "pass1234", role: "officer", name: "Cpl. T. Phiri" },
+  { username: "officer3", password: "pass1234", role: "officer", name: "Insp. J. Moyo" },
 ]
 
 async function waitForDb(retries = 10, delayMs = 3000) {
@@ -43,17 +43,18 @@ async function main() {
   // 3. Users with bcrypt-hashed passwords (idempotent)
   for (const u of USERS) {
     const hash = await bcrypt.hash(u.password, 10)
+    const station = u.role === "admin" ? "Central Finance" : ""
     await pool.query(
       `INSERT INTO users (username, password_hash, name, role, station)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (username) DO NOTHING`,
-      [u.username, hash, u.name, u.role, u.station],
+      [u.username, hash, u.name, u.role, station],
     )
-    // Migration safety: fill the station on accounts that predate the column.
-    // Passwords are never reset here — only the station is back-filled.
+    // Keep the access model consistent across re-seeds and older databases:
+    // officers can post for ANY station (station = ''), admins are Central Finance.
     await pool.query(
-      "UPDATE users SET station = $2 WHERE username = $1 AND station = ''",
-      [u.username, u.station],
+      "UPDATE users SET station = $2 WHERE username = $1 AND role = $3",
+      [u.username, station, u.role],
     )
   }
 
