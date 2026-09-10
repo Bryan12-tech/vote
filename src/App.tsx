@@ -917,7 +917,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening }: {
               style={{
                 borderBottom: mode === m ? "2px solid #c9a227" : "2px solid transparent",
                 color: mode === m ? "#1a2744" : "#8a96af",
-                background: "transparent", border: "none", borderBottom: mode === m ? "2px solid #c9a227" : "2px solid transparent",
+                background: "transparent", border: "none",
                 marginBottom: -2
               }}>
               {label}
@@ -1173,7 +1173,13 @@ export default function App() {
         {/* Mobile topbar */}
         <div className="flex md:hidden items-center justify-between px-4 py-3"
           style={{ background: "#1a2744", borderBottom: "3px solid #c9a227" }}>
-          <button onClick={() => setMobileNav(true)} className="text-white text-xl cursor-pointer font-bold">☰</button>
+          <button
+            onClick={() => setMobileNav(true)}
+            aria-label="Open navigation menu"
+            className="text-white text-xl cursor-pointer font-bold"
+          >
+            ☰
+          </button>
           <div className="font-serif font-bold text-white text-sm">Police Votebook System</div>
           <div className="font-mono text-xs" style={{ color: "#c9a227" }}>TSh {fmtMoney(bal)}</div>
         </div>
