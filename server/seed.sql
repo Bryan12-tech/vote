@@ -10,7 +10,7 @@ INSERT INTO stations (name) VALUES
   ('Makao Kaskazini Pemba')
 ON CONFLICT (name) DO NOTHING;
 
-INSERT INTO vote_items (vote, year, subvote, pk, code, description) VALUES
+INSERT INTO vote_items (vote, sub_vote, item, sub_item, code, description) VALUES
   ('28', '2039', 'C01C01', 'PK001', '22002101', 'Electricity'),
   ('28', '2039', 'E02C01', 'PK002', '22002102', 'Water Charges'),
   ('28', '2039', 'C01C01', 'PK001', '22003102', 'Diesel'),

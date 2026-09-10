@@ -9,9 +9,9 @@ export interface SessionUser {
 
 export interface VoteItem {
   vote: string
-  year: string
-  subvote: string
-  pk: string
+  subVote: string
+  item: string
+  subItem: string
   code: string
   description: string
 }
@@ -26,9 +26,9 @@ export interface CashbookEntry {
   officerName: string
   voteCode: string
   voteDescription: string
-  voteSubvote: string
-  votePk: string
-  voteYear: string
+  voteSubVote: string
+  voteItem: string
+  voteSubItem: string
   payee: string
   purpose: string
   receiptNo: string

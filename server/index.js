@@ -72,9 +72,9 @@ function rowToEntry(r) {
     officerName: r.officer_name,
     voteCode: r.vote_code,
     voteDescription: r.vote_description,
-    voteSubvote: r.vote_subvote,
-    votePk: r.vote_pk,
-    voteYear: r.vote_year,
+    voteSubVote: r.vote_sub_vote,
+    voteItem: r.vote_item,
+    voteSubItem: r.vote_sub_item,
     payee: r.payee,
     purpose: r.purpose,
     receiptNo: r.receipt_no,
@@ -115,13 +115,13 @@ async function insertEntry(f) {
     const r = await client.query(
       `INSERT INTO cashbook_entries
          (entry_ref, type, description, station, officer, officer_name,
-          vote_code, vote_description, vote_subvote, vote_pk, vote_year,
+          vote_code, vote_description, vote_sub_vote, vote_item, vote_sub_item,
           payee, purpose, receipt_no, cashbook_ref, debit, credit, balance)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        RETURNING *`,
       [
         entryRef, f.type, f.description, f.station, f.officer, f.officerName,
-        f.voteCode, f.voteDescription, f.voteSubvote, f.votePk, f.voteYear,
+        f.voteCode, f.voteDescription, f.voteSubVote, f.voteItem, f.voteSubItem,
         f.payee, f.purpose, f.receiptNo, f.cashbookRef,
         f.debit.toFixed(2), f.credit.toFixed(2), balance.toFixed(2),
       ],
@@ -189,7 +189,9 @@ app.get("/api/bootstrap", auth, async (req, res, next) => {
   try {
     const stations = (await pool.query("SELECT name FROM stations ORDER BY id")).rows.map(r => r.name)
     const voteItems = (
-      await pool.query("SELECT vote, year, subvote, pk, code, description FROM vote_items ORDER BY id")
+      await pool.query(
+        'SELECT vote, sub_vote AS "subVote", item, sub_item AS "subItem", code, description FROM vote_items ORDER BY id',
+      )
     ).rows
     res.json({ stations, voteItems })
   } catch (e) {
@@ -227,9 +229,9 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
       officerName: req.user.name,
       voteCode: vote.code,
       voteDescription: vote.description,
-      voteSubvote: vote.subvote,
-      votePk: vote.pk,
-      voteYear: vote.year,
+      voteSubVote: vote.sub_vote,
+      voteItem: vote.item,
+      voteSubItem: vote.sub_item,
       payee: String(payee).trim(),
       purpose: String(purpose).trim(),
       receiptNo: String(receiptNo || "").trim(),
@@ -258,9 +260,9 @@ app.post("/api/cashbook/credits", auth, requireCentralFinanceAdmin, async (req, 
       officerName: req.user.name,
       voteCode: "",
       voteDescription: "",
-      voteSubvote: "",
-      votePk: "",
-      voteYear: "",
+      voteSubVote: "",
+      voteItem: "",
+      voteSubItem: "",
       payee: "Government Treasury",
       purpose: String(description).trim(),
       receiptNo: String(ref || "").trim(),

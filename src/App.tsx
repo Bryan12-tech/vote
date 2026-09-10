@@ -514,7 +514,7 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
             {selectedVote && (
               <div className="mt-2 grid grid-cols-4 gap-2 px-3 py-2"
                 style={{ background: "#f4f7fc", border: "1px solid #d1d9e6", borderRadius: "2px" }}>
-                {[["Vote", selectedVote.vote], ["Year", selectedVote.year], ["Sub-Vote", selectedVote.subvote], ["PK", selectedVote.pk]].map(([l, v]) => (
+                {[["Vote", selectedVote.vote], ["Sub-Vote", selectedVote.subVote], ["Item", selectedVote.item], ["Sub-Item", selectedVote.subItem]].map(([l, v]) => (
                   <div key={l}>
                     <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{l}</div>
                     <div className="font-mono text-xs font-semibold text-[#1a2744]">{v}</div>
@@ -693,7 +693,7 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: string[
                       ? <span className="chip chip-blue">{e.voteCode}</span>
                       : <span className="chip chip-green">RECEIPT</span>}
                     {e.type === "payment" && (
-                      <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">{e.voteSubvote} · {e.votePk}</div>
+                      <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">{e.voteItem} · {e.voteSubItem}</div>
                     )}
                   </td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">
@@ -800,7 +800,7 @@ function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stati
                   <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
                   <td className="px-4 py-2.5 doc-line">
                     <span className="chip chip-blue">{e.voteCode}</span>
-                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">{e.voteSubvote} · {e.votePk}</div>
+                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">{e.voteItem} · {e.voteSubItem}</div>
                   </td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line font-medium">{e.voteDescription}</td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">
