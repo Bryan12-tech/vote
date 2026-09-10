@@ -155,12 +155,6 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
               {loading ? "Authenticating..." : "Sign In"}
             </button>
           </form>
-
-          <div className="px-6 pb-4 text-center">
-            <p className="text-xs text-[#8a96af] font-mono">
-              Demo: admin/admin123 · officer1/pass1234 · officer2/pass1234 · officer3/pass1234
-            </p>
-          </div>
         </div>
 
         <p className="mt-6 text-xs text-[#8a96af] text-center max-w-sm">
