@@ -153,7 +153,7 @@ app.get("/api/auth/role", async (req, res, next) => {
 // Public: the login screen needs station names before authentication.
 app.get("/api/stations", async (req, res, next) => {
   try {
-    const stations = (await pool.query("SELECT name FROM stations ORDER BY id")).rows.map(r => r.name)
+    const stations = (await pool.query('SELECT name, sub_vote AS "subVote" FROM stations ORDER BY id')).rows
     res.json({ stations })
   } catch (e) {
     next(e)
@@ -187,11 +187,9 @@ app.post("/api/login", async (req, res, next) => {
 
 app.get("/api/bootstrap", auth, async (req, res, next) => {
   try {
-    const stations = (await pool.query("SELECT name FROM stations ORDER BY id")).rows.map(r => r.name)
+    const stations = (await pool.query('SELECT name, sub_vote AS "subVote" FROM stations ORDER BY id')).rows
     const voteItems = (
-      await pool.query(
-        'SELECT vote, sub_vote AS "subVote", item, sub_item AS "subItem", code, description FROM vote_items ORDER BY id',
-      )
+      await pool.query('SELECT vote, item, sub_item AS "subItem", code, description FROM vote_items ORDER BY id')
     ).rows
     res.json({ stations, voteItems })
   } catch (e) {
@@ -217,7 +215,8 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
     // Officers can post for any station — the station is chosen per entry.
     const station = String(req.body?.station || "").trim()
     if (!station) throw new HttpError(400, "Please select the station this payment belongs to.")
-    await assertKnownStation(station)
+    const stationRow = (await pool.query("SELECT sub_vote FROM stations WHERE name = $1", [station])).rows[0]
+    if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
     const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [String(voteCode || "")])).rows[0]
     if (!vote) throw new HttpError(400, "Please select a valid vote item.")
 
@@ -229,7 +228,7 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
       officerName: req.user.name,
       voteCode: vote.code,
       voteDescription: vote.description,
-      voteSubVote: vote.sub_vote,
+      voteSubVote: stationRow.sub_vote,
       voteItem: vote.item,
       voteSubItem: vote.sub_item,
       payee: String(payee).trim(),
@@ -332,11 +331,6 @@ function validateUserFields(body) {
   }
   if ("station" in body) data.station = String(body.station || "").trim()
   return { data, errors }
-}
-
-async function assertKnownStation(station) {
-  const s = await pool.query("SELECT 1 FROM stations WHERE name = $1", [station])
-  if (s.rows.length === 0) throw new HttpError(400, `Unknown station "${station}". Choose one of the Pemba stations.`)
 }
 
 app.get("/api/users", auth, requireCentralFinanceAdmin, async (req, res, next) => {

@@ -2,7 +2,8 @@
 
 CREATE TABLE IF NOT EXISTS stations (
   id SERIAL PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL
+  name TEXT UNIQUE NOT NULL,
+  sub_vote TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -18,7 +19,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS vote_items (
   id SERIAL PRIMARY KEY,
   vote TEXT NOT NULL,
-  sub_vote TEXT NOT NULL,
   item TEXT NOT NULL,
   sub_item TEXT NOT NULL,
   code TEXT UNIQUE NOT NULL,
@@ -85,3 +85,19 @@ BEGIN
 END $$;
 
 INSERT INTO cashbook_settings (id, opening_balance) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+-- Migration: each station carries its fiscal sub-vote (2039 for Mkoani /
+-- Chakechake / Makao Kusini Pemba, 2040 for Wete / Micheweni / Makao Kaskazini
+-- Pemba). The shared vote-item master list is sub-vote agnostic — the station
+-- determines which sub-vote an entry is booked under.
+ALTER TABLE stations ADD COLUMN IF NOT EXISTS sub_vote TEXT NOT NULL DEFAULT '';
+UPDATE stations SET sub_vote = CASE name
+  WHEN 'Mkoani' THEN '2039'
+  WHEN 'Chakechake' THEN '2039'
+  WHEN 'Makao Kusini Pemba' THEN '2039'
+  WHEN 'Wete' THEN '2040'
+  WHEN 'Micheweni' THEN '2040'
+  WHEN 'Makao Kaskazini Pemba' THEN '2040'
+  ELSE sub_vote
+END;
+ALTER TABLE vote_items DROP COLUMN IF EXISTS sub_vote;

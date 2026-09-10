@@ -7,9 +7,13 @@ export interface SessionUser {
   station: string
 }
 
+export interface Station {
+  name: string
+  subVote: string
+}
+
 export interface VoteItem {
   vote: string
-  subVote: string
   item: string
   subItem: string
   code: string
@@ -123,7 +127,7 @@ export const api = {
 
   // Stations come from the database, but officers no longer pick one at sign-in:
   // the station is assigned to the account by the administrator.
-  stations: () => request<{ stations: string[] }>("/api/stations"),
+  stations: () => request<{ stations: Station[] }>("/api/stations"),
 
   // The station is attached to the account server-side (see POST /api/users).
   login: (username: string, password: string) =>
@@ -133,7 +137,7 @@ export const api = {
     }),
 
   bootstrap: (token: string) =>
-    request<{ stations: string[]; voteItems: VoteItem[] }>("/api/bootstrap", { token }),
+    request<{ stations: Station[]; voteItems: VoteItem[] }>("/api/bootstrap", { token }),
 
   cashbook: (token: string) => request<CashbookState>("/api/cashbook", { token }),
 

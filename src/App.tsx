@@ -6,6 +6,7 @@ import {
   saveSession,
   clearSession,
   type SessionUser,
+  type Station,
   type VoteItem,
   type CashbookEntry,
   type CashbookState,
@@ -262,7 +263,7 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════
 function Dashboard({ cb, user, stations, onAction }: {
-  cb: CashbookState; user: SessionUser; stations: string[]; onAction: (v: string) => void
+  cb: CashbookState; user: SessionUser; stations: Station[]; onAction: (v: string) => void
 }) {
   const bal = currentBalance(cb)
   const todayStr = new Date().toISOString().slice(0, 10)
@@ -286,7 +287,7 @@ function Dashboard({ cb, user, stations, onAction }: {
       {/* Page title */}
       <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
-          {user.role === "admin" ? "Central Finance" : "All Stations"} · Fiscal Year 2039
+          {user.role === "admin" ? "Central Finance" : "All Stations"} · Vote 28 · FY 2039–2040
         </div>
         <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Finance Dashboard</h1>
       </div>
@@ -382,7 +383,7 @@ function Dashboard({ cb, user, stations, onAction }: {
 // NEW VOTEBOOK ENTRY
 // ══════════════════════════════════════════════════════════════════════════
 function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
-  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: string[]; onSave: (p: PaymentPayload) => Promise<CashbookEntry>
+  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: Station[]; onSave: (p: PaymentPayload) => Promise<CashbookEntry>
 }) {
   const [selectedVote, setSelectedVote] = useState<VoteItem | null>(null)
   const [stationName, setStationName] = useState("")
@@ -484,7 +485,7 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
               value={stationName}
               onChange={e => { setStationName(e.target.value); setErrors(p => ({ ...p, station: "" })) }}>
               <option value="">— Select Station —</option>
-              {stations.map(s => <option key={s} value={s}>{s}</option>)}
+              {stations.map(s => <option key={s.name} value={s.name}>{s.name} (Sub-Vote {s.subVote})</option>)}
             </select>
             {errors.station && <p className="font-sans text-xs text-red-600 mt-1">{errors.station}</p>}
           </div>
@@ -514,7 +515,7 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
             {selectedVote && (
               <div className="mt-2 grid grid-cols-4 gap-2 px-3 py-2"
                 style={{ background: "#f4f7fc", border: "1px solid #d1d9e6", borderRadius: "2px" }}>
-                {[["Vote", selectedVote.vote], ["Sub-Vote", selectedVote.subVote], ["Item", selectedVote.item], ["Sub-Item", selectedVote.subItem]].map(([l, v]) => (
+                {[["Vote", selectedVote.vote], ["Sub-Vote", stations.find(s => s.name === stationName)?.subVote ?? "—"], ["Item", selectedVote.item], ["Sub-Item", selectedVote.subItem]].map(([l, v]) => (
                   <div key={l}>
                     <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{l}</div>
                     <div className="font-mono text-xs font-semibold text-[#1a2744]">{v}</div>
@@ -594,7 +595,7 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
 // ══════════════════════════════════════════════════════════════════════════
 // CASHBOOK LEDGER
 // ══════════════════════════════════════════════════════════════════════════
-function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: string[] }) {
+function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station[] }) {
   const [filterStation, setFilterStation] = useState("all")
   const [filterDate, setFilterDate] = useState("")
   const [search, setSearch] = useState("")
@@ -636,7 +637,7 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: string[
       <div className="flex flex-wrap gap-3 mb-4">
         <select className="gov-input" style={{ width: "auto" }} value={filterStation} onChange={e => setFilterStation(e.target.value)}>
           <option value="all">All Stations</option>
-          {stations.map(s => <option key={s} value={s}>{s}</option>)}
+          {stations.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
         </select>
         <input type="date" className="gov-input" style={{ width: "auto" }} value={filterDate} onChange={e => setFilterDate(e.target.value)} />
         <input type="text" className="gov-input flex-1" style={{ minWidth: 160 }} placeholder="Search by description, code, payee..." value={search} onChange={e => setSearch(e.target.value)}/>
@@ -723,7 +724,7 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: string[
 // ══════════════════════════════════════════════════════════════════════════
 // VOTEBOOK RECORDS (votebook entries only, by station)
 // ══════════════════════════════════════════════════════════════════════════
-function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stations: string[]; voteItems: VoteItem[] }) {
+function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stations: Station[]; voteItems: VoteItem[] }) {
   const [filterStation, setFilterStation] = useState("all")
   const [filterVote, setFilterVote] = useState("all")
   const [search, setSearch] = useState("")
@@ -754,7 +755,7 @@ function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stati
       <div className="flex flex-wrap gap-3 mb-4">
         <select className="gov-input" style={{ width: "auto" }} value={filterStation} onChange={e => setFilterStation(e.target.value)}>
           <option value="all">All Stations</option>
-          {stations.map(s => <option key={s} value={s}>{s}</option>)}
+          {stations.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
         </select>
         <select className="gov-input" style={{ width: "auto" }} value={filterVote} onChange={e => setFilterVote(e.target.value)}>
           <option value="all">All Vote Codes</option>
@@ -1011,7 +1012,7 @@ function SummaryReport({ cb }: { cb: CashbookState }) {
     <div className="flex-1 overflow-y-auto p-6 lg:p-8">
       <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Administrator · Finance Report</div>
-        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Summary Report — Fiscal Year 2039</h1>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Summary Report — Vote 28 · FY 2039–2040</h1>
       </div>
 
       {/* Top stats */}
@@ -1092,7 +1093,7 @@ export default function App() {
   const token = session?.token ?? null
   const [view, setView] = useState("dashboard")
   const [cb, setCb] = useState<CashbookState>({ openingBalance: 0, entries: [] })
-  const [stations, setStations] = useState<string[]>([])
+  const [stations, setStations] = useState<Station[]>([])
   const [voteItems, setVoteItems] = useState<VoteItem[]>([])
   const [dataErr, setDataErr] = useState("")
   const [dataTick, setDataTick] = useState(0)
