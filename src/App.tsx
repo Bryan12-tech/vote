@@ -12,6 +12,7 @@ import {
   type PaymentPayload,
   type CreditPayload,
 } from "./api"
+import UsersAdmin from "./UsersAdmin"
 
 
 
@@ -58,33 +59,18 @@ function GovCrest({ size = 48 }: { size?: number }) {
 function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionUser }) => void }) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
-  const [station, setStation] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
-  const [roleHint, setRoleHint] = useState<string | null>(null)
-  const [stationOptions, setStationOptions] = useState<string[]>([])
 
-  // Stations come from the database
-  useEffect(() => {
-    api.stations().then(r => setStationOptions(r.stations)).catch(() => setStationOptions([]))
-  }, [])
-
-  // Live role hint so administrator accounts are locked to Central Finance
-  useEffect(() => {
-    const name = username.trim()
-    if (!name) { setRoleHint(null); return }
-    const t = setTimeout(() => { api.roleHint(name).then(setRoleHint) }, 250)
-    return () => clearTimeout(t)
-  }, [username])
-
-  const isAdminLogin = roleHint === "admin"
-
+  // Station access is assigned to each account by the administrator at Central
+  // Finance — officers do not pick a station at sign-in anymore.
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setError("")
-    if (!isAdminLogin && !station) { setError("Please select your police station."); return }
+    if (!username.trim()) { setError("Please enter your username."); return }
+    if (!password) { setError("Please enter your password."); return }
     setLoading(true)
     try {
-      const s = await api.login(username, password, isAdminLogin ? "Central Finance" : station)
+      const s = await api.login(username.trim(), password)
       onLogin(s)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed. Please try again.")
@@ -150,21 +136,12 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Police Station
+                Station Access
               </label>
-              {isAdminLogin ? (
-                <>
-                  <input className="gov-input" value="Central Finance — Administrator" disabled/>
-                  <p className="font-mono text-[10px] text-[#8a96af] mt-1.5">
-                    Administrative account · balance &amp; credits managed from Central Finance
-                  </p>
-                </>
-              ) : (
-                <select className="gov-input" value={station} onChange={e => setStation(e.target.value)}>
-                  <option value="">— Select Station —</option>
-                  {stationOptions.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              )}
+              <p className="font-sans text-sm text-[#4b5d84]">
+                Your signing station is <strong>assigned to your account</strong> by the administrator
+                at Central Finance — you do not select it here.
+              </p>
             </div>
 
             {error && (
@@ -181,7 +158,7 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
 
           <div className="px-6 pb-4 text-center">
             <p className="text-xs text-[#8a96af] font-mono">
-              Demo: admin/admin123 (Central Finance) · officer1/pass1234
+              Demo: admin/admin123 · officer1/pass1234 · officer2/pass1234 · officer3/pass1234
             </p>
           </div>
         </div>
@@ -216,6 +193,7 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
     { id: "votebook",  label: "Votebook Records", icon: "≡" },
     ...(user.role === "admin" ? [
       { id: "topup",   label: "Cashbook Top-Up", icon: "⊕" },
+      { id: "users",   label: "System Users", icon: "▣" },
       { id: "summary", label: "Summary Report", icon: "◈" },
     ] : []),
   ]
@@ -1202,6 +1180,9 @@ export default function App() {
         {view === "votebook"  && <VotebookRecords cb={cb} user={user} stations={stations} voteItems={voteItems} />}
         {view === "topup"     && user.role === "admin" && (
           <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} />
+        )}
+        {view === "users"     && user.role === "admin" && (
+          <UsersAdmin token={token!} user={user} stations={stations} />
         )}
         {view === "summary"   && user.role === "admin" && <SummaryReport cb={cb} />}
       </div>

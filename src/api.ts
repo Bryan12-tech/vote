@@ -58,6 +58,23 @@ export interface CreditPayload {
   ref: string
 }
 
+export interface UserRecord {
+  id: number
+  username: string
+  name: string
+  role: "admin" | "officer"
+  station: string
+  createdAt: string | null
+}
+
+export interface UserPayload {
+  username?: string
+  password?: string
+  name?: string
+  role?: "admin" | "officer"
+  station?: string
+}
+
 const TOKEN_KEY = "vbm_token"
 const USER_KEY = "vbm_user"
 
@@ -103,12 +120,15 @@ export const api = {
     }
   },
 
+  // Stations come from the database, but officers no longer pick one at sign-in:
+  // the station is assigned to the account by the administrator.
   stations: () => request<{ stations: string[] }>("/api/stations"),
 
-  login: (username: string, password: string, station: string) =>
+  // The station is attached to the account server-side (see POST /api/users).
+  login: (username: string, password: string) =>
     request<{ token: string; user: SessionUser }>("/api/login", {
       method: "POST",
-      body: JSON.stringify({ username, password, station }),
+      body: JSON.stringify({ username, password }),
     }),
 
   bootstrap: (token: string) =>
@@ -135,5 +155,28 @@ export const api = {
       method: "PUT",
       token,
       body: JSON.stringify({ amount }),
+    }),
+
+  // ── System users (admin · Central Finance only) ─────────────────────────
+  users: (token: string) => request<{ users: UserRecord[] }>("/api/users", { token }),
+
+  createUser: (token: string, payload: UserPayload) =>
+    request<{ user: UserRecord }>("/api/users", {
+      method: "POST",
+      token,
+      body: JSON.stringify(payload),
+    }),
+
+  updateUser: (token: string, username: string, payload: UserPayload) =>
+    request<{ user: UserRecord }>(`/api/users/${encodeURIComponent(username)}`, {
+      method: "PUT",
+      token,
+      body: JSON.stringify(payload),
+    }),
+
+  deleteUser: (token: string, username: string) =>
+    request<{ ok: boolean }>(`/api/users/${encodeURIComponent(username)}`, {
+      method: "DELETE",
+      token,
     }),
 }

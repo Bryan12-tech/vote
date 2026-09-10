@@ -164,26 +164,24 @@ app.post("/api/login", async (req, res, next) => {
   try {
     const username = String(req.body?.username || "").trim()
     const password = String(req.body?.password || "")
-    const station = String(req.body?.station || "").trim()
 
     const u = (await pool.query("SELECT * FROM users WHERE username = $1", [username])).rows[0]
     if (!u || !(await bcrypt.compare(password, u.password_hash))) {
       throw new HttpError(401, "Invalid credentials. Please check your username and password.")
     }
 
-    let sessionStation
+    // The station belongs to the account, not the sign-in form. The administrator
+    // creates officer accounts and assigns each one to a station (Central Finance
+    // manages this). Admins always sign in at Central Finance.
+    let sessionStation = u.station || ""
     if (u.role === "admin") {
-      if (station && station !== CENTRAL_FINANCE) {
-        throw new HttpError(403, "The administrator signs in at Central Finance.")
-      }
       sessionStation = CENTRAL_FINANCE
-    } else {
-      if (station === CENTRAL_FINANCE) {
-        throw new HttpError(403, "Only the administrator signs in at Central Finance.")
-      }
-      const s = await pool.query("SELECT 1 FROM stations WHERE name = $1", [station])
-      if (!s.rows.length) throw new HttpError(400, "Please select your police station.")
-      sessionStation = station
+    }
+    if (u.role !== "admin" && sessionStation === CENTRAL_FINANCE) {
+      throw new HttpError(403, "Only the administrator signs in at Central Finance.")
+    }
+    if (!sessionStation) {
+      throw new HttpError(400, "This account has no station assigned. Contact the administrator at Central Finance.")
     }
 
     const token = jwt.sign(
@@ -288,6 +286,167 @@ app.put("/api/cashbook/opening-balance", auth, requireCentralFinanceAdmin, async
     if (!Number.isFinite(amt) || amt < 0) throw new HttpError(400, "Enter a valid opening balance.")
     await pool.query("UPDATE cashbook_settings SET opening_balance = $1 WHERE id = 1", [amt.toFixed(2)])
     res.json(await getCashbookState())
+  } catch (e) {
+    next(e)
+  }
+})
+
+// ── System user management (admin · Central Finance only) ──────────────────
+const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/
+
+function rowToUser(r) {
+  return {
+    id: r.id,
+    username: r.username,
+    name: r.name,
+    role: r.role,
+    station: r.station,
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+  }
+}
+
+function validateUserFields(body) {
+  const errors = []
+  const data = {}
+  if ("username" in body) {
+    const username = String(body.username || "").trim()
+    if (!USERNAME_RE.test(username)) {
+      errors.push("Username must be 3–32 characters using letters, numbers, dot, dash or underscore.")
+    } else {
+      data.username = username
+    }
+  }
+  if ("password" in body) {
+    const password = String(body.password || "")
+    if (password.length && password.length < 6) {
+      errors.push("Password must be at least 6 characters.")
+    } else {
+      data.password = password
+    }
+  }
+  if ("name" in body) {
+    const name = String(body.name || "").trim()
+    if (!name) errors.push("Full name is required.")
+    else data.name = name
+  }
+  if ("role" in body) {
+    const role = String(body.role || "").trim()
+    if (role !== "admin" && role !== "officer") errors.push("Role must be 'admin' or 'officer'.")
+    else data.role = role
+  }
+  if ("station" in body) data.station = String(body.station || "").trim()
+  return { data, errors }
+}
+
+async function assertKnownStation(station) {
+  const s = await pool.query("SELECT 1 FROM stations WHERE name = $1", [station])
+  if (s.rows.length === 0) throw new HttpError(400, `Unknown station "${station}". Choose one of the Pemba stations.`)
+}
+
+app.get("/api/users", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query("SELECT id, username, name, role, station, created_at FROM users ORDER BY id ASC")
+    res.json({ users: r.rows.map(rowToUser) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.post("/api/users", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  try {
+    const { data, errors } = validateUserFields(req.body || {})
+    if (errors.length) throw new HttpError(400, errors.join(" "))
+    if (!data.username) throw new HttpError(400, "Username is required.")
+    if (!data.password) throw new HttpError(400, "Password is required.")
+    if (!data.name) throw new HttpError(400, "Full name is required.")
+
+    const role = data.role || "officer"
+    const station = role === "admin" ? CENTRAL_FINANCE : data.station
+    if (role === "admin") {
+      if (data.station && data.station !== CENTRAL_FINANCE) {
+        throw new HttpError(400, "Administrator accounts always sign in at Central Finance.")
+      }
+    } else {
+      if (!station) throw new HttpError(400, "Please assign the officer to a police station.")
+      await assertKnownStation(station)
+    }
+
+    const hash = await bcrypt.hash(data.password, 10)
+    const r = await pool.query(
+      `INSERT INTO users (username, password_hash, name, role, station)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (username) DO NOTHING
+       RETURNING id, username, name, role, station, created_at`,
+      [data.username, hash, data.name, role, station],
+    )
+    if (r.rows.length === 0) {
+      throw new HttpError(409, `The username "${data.username}" is already taken.`)
+    }
+    res.status(201).json({ user: rowToUser(r.rows[0]) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.put("/api/users/:username", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  try {
+    const username = String(req.params.username)
+    const current = (await pool.query("SELECT * FROM users WHERE username = $1", [username])).rows[0]
+    if (!current) throw new HttpError(404, "User not found.")
+
+    const { data, errors } = validateUserFields(req.body || {})
+    if (errors.length) throw new HttpError(400, errors.join(" "))
+
+    const name = data.name ?? current.name
+    const role = data.role ?? current.role
+    let station = data.station ?? current.station
+
+    if (role === "admin") {
+      station = CENTRAL_FINANCE
+    } else {
+      if (!station) throw new HttpError(400, "Please assign the officer to a police station.")
+      if (station === CENTRAL_FINANCE) {
+        throw new HttpError(400, "Only administrator accounts sign in at Central Finance.")
+      }
+      await assertKnownStation(station)
+    }
+
+    // Guards: an admin cannot change their own role, and at least one admin must remain.
+    if (current.username === req.user.username && role !== "admin") {
+      throw new HttpError(400, "You cannot change your own role.")
+    }
+    if (current.role === "admin" && role !== "admin") {
+      const n = Number((await pool.query("SELECT count(*) AS n FROM users WHERE role = 'admin'")).rows[0].n)
+      if (n <= 1) throw new HttpError(400, "At least one administrator must remain. Promote another user first.")
+    }
+
+    const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : current.password_hash
+    const r = await pool.query(
+      `UPDATE users SET name = $2, role = $3, station = $4, password_hash = $5
+       WHERE username = $1
+       RETURNING id, username, name, role, station, created_at`,
+      [username, name, role, station, passwordHash],
+    )
+    res.json({ user: rowToUser(r.rows[0]) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.delete("/api/users/:username", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  try {
+    const username = String(req.params.username)
+    if (username === req.user.username) {
+      throw new HttpError(400, "You cannot delete your own account.")
+    }
+    const current = (await pool.query("SELECT role FROM users WHERE username = $1", [username])).rows[0]
+    if (!current) throw new HttpError(404, "User not found.")
+    if (current.role === "admin") {
+      const n = Number((await pool.query("SELECT count(*) AS n FROM users WHERE role = 'admin'")).rows[0].n)
+      if (n <= 1) throw new HttpError(400, "At least one administrator must remain. Promote another user first.")
+    }
+    await pool.query("DELETE FROM users WHERE username = $1", [username])
+    res.json({ ok: true })
   } catch (e) {
     next(e)
   }

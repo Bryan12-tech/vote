@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'officer'))
+  role TEXT NOT NULL CHECK (role IN ('admin', 'officer')),
+  station TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS vote_items (
@@ -52,5 +54,10 @@ CREATE TABLE IF NOT EXISTS cashbook_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cashbook_entries_id ON cashbook_entries (id);
+
+-- Migration for databases created before users carried a station column.
+-- Postgres supports IF NOT EXISTS for ADD COLUMN, so this is safe on both.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS station TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 INSERT INTO cashbook_settings (id, opening_balance) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
