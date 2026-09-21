@@ -32,6 +32,22 @@ class HttpError extends Error {
   }
 }
 
+// Request bodies are attacker-controlled JSON, so only accept primitive values.
+// `String({ toString: "not-a-function" })` (and `Number(...)` on the same object)
+// throws a TypeError, which surfaces as a 500 instead of a validation error.
+function asString(value) {
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return ""
+}
+
+// Accepts a JSON number or a numeric string — the UI sends amounts as strings.
+function asNumber(value) {
+  if (typeof value === "number") return value
+  if (typeof value === "string") return Number(value)
+  return Number.NaN
+}
+
 function auth(req, res, next) {
   const header = req.headers.authorization || ""
   const token = header.startsWith("Bearer ") ? header.slice(7) : null
@@ -162,8 +178,8 @@ app.get("/api/stations", async (req, res, next) => {
 
 app.post("/api/login", async (req, res, next) => {
   try {
-    const username = String(req.body?.username || "").trim()
-    const password = String(req.body?.password || "")
+    const username = asString(req.body?.username).trim()
+    const password = asString(req.body?.password)
 
     const u = (await pool.query("SELECT * FROM users WHERE username = $1", [username])).rows[0]
     if (!u || !(await bcrypt.compare(password, u.password_hash))) {
@@ -208,16 +224,18 @@ app.get("/api/cashbook", auth, async (req, res, next) => {
 app.post("/api/cashbook/payments", auth, async (req, res, next) => {
   try {
     const { voteCode, amount, payee, purpose, receiptNo, cashbookRef } = req.body || {}
-    const amt = Number(amount)
+    const amt = asNumber(amount)
     if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
-    if (!String(payee || "").trim()) throw new HttpError(400, "Payee name is required.")
-    if (!String(purpose || "").trim()) throw new HttpError(400, "Purpose / description is required.")
+    const payeeName = asString(payee).trim()
+    if (!payeeName) throw new HttpError(400, "Payee name is required.")
+    const purposeText = asString(purpose).trim()
+    if (!purposeText) throw new HttpError(400, "Purpose / description is required.")
     // Officers can post for any station — the station is chosen per entry.
-    const station = String(req.body?.station || "").trim()
+    const station = asString(req.body?.station).trim()
     if (!station) throw new HttpError(400, "Please select the station this payment belongs to.")
     const stationRow = (await pool.query("SELECT sub_vote FROM stations WHERE name = $1", [station])).rows[0]
     if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
-    const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [String(voteCode || "")])).rows[0]
+    const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [asString(voteCode)])).rows[0]
     if (!vote) throw new HttpError(400, "Please select a valid vote item.")
 
     const entry = await insertEntry({
@@ -231,10 +249,10 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
       voteSubVote: stationRow.sub_vote,
       voteItem: vote.item,
       voteSubItem: vote.sub_item,
-      payee: String(payee).trim(),
-      purpose: String(purpose).trim(),
-      receiptNo: String(receiptNo || "").trim(),
-      cashbookRef: String(cashbookRef || "").trim(),
+      payee: payeeName,
+      purpose: purposeText,
+      receiptNo: asString(receiptNo).trim(),
+      cashbookRef: asString(cashbookRef).trim(),
       debit: amt,
       credit: 0,
     })
@@ -247,13 +265,14 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
 app.post("/api/cashbook/credits", auth, requireCentralFinanceAdmin, async (req, res, next) => {
   try {
     const { amount, description, ref } = req.body || {}
-    const amt = Number(amount)
+    const amt = asNumber(amount)
     if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount.")
-    if (!String(description || "").trim()) throw new HttpError(400, "Description is required.")
+    const descriptionText = asString(description).trim()
+    if (!descriptionText) throw new HttpError(400, "Description is required.")
 
     const entry = await insertEntry({
       type: "receipt",
-      description: String(description).trim(),
+      description: descriptionText,
       station: CENTRAL_FINANCE,
       officer: req.user.username,
       officerName: req.user.name,
@@ -263,9 +282,9 @@ app.post("/api/cashbook/credits", auth, requireCentralFinanceAdmin, async (req, 
       voteItem: "",
       voteSubItem: "",
       payee: "Government Treasury",
-      purpose: String(description).trim(),
-      receiptNo: String(ref || "").trim(),
-      cashbookRef: String(ref || "").trim(),
+      purpose: descriptionText,
+      receiptNo: asString(ref).trim(),
+      cashbookRef: asString(ref).trim(),
       debit: 0,
       credit: amt,
     })
@@ -277,7 +296,7 @@ app.post("/api/cashbook/credits", auth, requireCentralFinanceAdmin, async (req, 
 
 app.put("/api/cashbook/opening-balance", auth, requireCentralFinanceAdmin, async (req, res, next) => {
   try {
-    const amt = Number(req.body?.amount)
+    const amt = asNumber(req.body?.amount)
     if (!Number.isFinite(amt) || amt < 0) throw new HttpError(400, "Enter a valid opening balance.")
     await pool.query("UPDATE cashbook_settings SET opening_balance = $1 WHERE id = 1", [amt.toFixed(2)])
     res.json(await getCashbookState())
@@ -304,7 +323,7 @@ function validateUserFields(body) {
   const errors = []
   const data = {}
   if ("username" in body) {
-    const username = String(body.username || "").trim()
+    const username = asString(body.username).trim()
     if (!USERNAME_RE.test(username)) {
       errors.push("Username must be 3–32 characters using letters, numbers, dot, dash or underscore.")
     } else {
@@ -312,7 +331,7 @@ function validateUserFields(body) {
     }
   }
   if ("password" in body) {
-    const password = String(body.password || "")
+    const password = asString(body.password)
     if (password.length && password.length < 6) {
       errors.push("Password must be at least 6 characters.")
     } else {
@@ -320,16 +339,16 @@ function validateUserFields(body) {
     }
   }
   if ("name" in body) {
-    const name = String(body.name || "").trim()
+    const name = asString(body.name).trim()
     if (!name) errors.push("Full name is required.")
     else data.name = name
   }
   if ("role" in body) {
-    const role = String(body.role || "").trim()
+    const role = asString(body.role).trim()
     if (role !== "admin" && role !== "officer") errors.push("Role must be 'admin' or 'officer'.")
     else data.role = role
   }
-  if ("station" in body) data.station = String(body.station || "").trim()
+  if ("station" in body) data.station = asString(body.station).trim()
   return { data, errors }
 }
 

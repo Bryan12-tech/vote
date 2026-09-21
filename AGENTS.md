@@ -11,6 +11,7 @@ React + Vite + Tailwind CSS frontend with a Node/Express + PostgreSQL backend fo
 - Backend only: `pnpm server` · seed only: `pnpm seed`
 - Production build: `pnpm build`
 - Preview the production build: `pnpm preview`
+- Security tests: `pnpm test` (needs `docker start votebook-db`; runs against a separate `votebook_test` database)
 - Format: `pnpm format`
 
 ## Architecture
@@ -56,6 +57,22 @@ This project uses **Tailwind CSS v4** through the `@tailwindcss/vite` plugin con
 - Ensure JSX tags are closed and braces are balanced.
 - Export components as default exports.
 - API rules live in `server/index.js` — never bypass or duplicate them client-side.
+
+## Testing
+
+- `pnpm test` runs the security suite in `test/**/*.test.js` with Node's built-in
+  test runner (`node:test`) — no test framework dependency is added.
+- The tests drive the real API (`server/index.js`) and real PostgreSQL, not mocks. The
+  harness builds a separate `votebook_test` database from the credentials in
+  `server/.env`; **the development database is never read or written**.
+- Start the database first: `docker start votebook-db`.
+- Every test file boots its own API process on a free port with a random `JWT_SECRET`;
+  files run serially (`--test-concurrency=1`) because the cashbook is shared state.
+- Coverage: JWT/auth handling and forgery, officer vs `Central Finance` admin boundaries,
+  cashbook integrity (validation, mass assignment, overdrafts, concurrent posting),
+  credential material, injection/traversal probes, response and error hygiene.
+- Remaining hardening work is tracked as `it.todo` entries — see `test/README.md`.
+- When a security test fails, fix the server rule in `server/index.js`, not the expectation.
 
 ## Deployment (Render free tier)
 

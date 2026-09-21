@@ -10,6 +10,7 @@
     "start": "node server/index.js",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "format": "oxfmt"
   },
   "dependencies": {
