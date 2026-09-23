@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from "react"
-import POLISI_LOGO from "./assets/tanzania-police-logo.jpg"
 import {
   api,
   loadSession,
@@ -10,16 +9,16 @@ import {
   type VoteItem,
   type CashbookEntry,
   type CashbookState,
+  type VoteAllocation,
+  type VoteExpenditure,
+  type VoteCashbookState,
   type PaymentPayload,
   type CreditPayload,
+  type AllocationPayload,
+  type AccountingPeriod,
 } from "./api"
+
 import UsersAdmin from "./UsersAdmin"
-
-
-
-
-
-
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDate(iso: string) {
@@ -39,13 +38,12 @@ function currentBalance(state: CashbookState) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// TANZANIA POLICE FORCE EMBLEM
-// ══════════════════════════════════════════════════════════════════════════
+// APPLICATION BRANDING
 function GovCrest({ size = 48 }: { size?: number }) {
   return (
-    <img
-      src={POLISI_LOGO}
-      alt="Tanzania Police Force emblem"
+  <img
+      src="/ys-logo.svg"
+      alt="YS CashBook & VoteBook System logo"
       width={size}
       height={size}
       className="rounded-full bg-white object-contain flex-shrink-0"
@@ -85,7 +83,7 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
       <div style={{ background: "#1a2744", borderBottom: "3px solid #c9a227" }}>
         <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="font-mono text-[11px] text-white/60 uppercase tracking-widest">
-            Tanzania Police Force — Official Government Portal
+            YS CashBook & VoteBook System — Official Government Portal
           </div>
           <div className="font-mono text-[11px] text-white/40 uppercase tracking-widest">
             Restricted Access
@@ -101,7 +99,7 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
             <GovCrest size={72} />
           </div>
           <h1 className="font-serif text-2xl font-bold text-[#1a2744] leading-tight">
-            Tanzania Police Force
+            YS CashBook & VoteBook System
           </h1>
           <p className="font-serif text-base italic text-[#4b5d84] mt-1">
             Finance &amp; Votebook Management System
@@ -185,9 +183,11 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
     { id: "dashboard", label: "Dashboard", icon: "⊞" },
     { id: "new",       label: "New Votebook Entry", icon: "✦" },
     { id: "cashbook",  label: "Cashbook Ledger", icon: "⊟" },
-    { id: "votebook",  label: "Votebook Records", icon: "≡" },
+    { id: "votebook",  label: "Vote Cashbook", icon: "≡" },
+    { id: "history",   label: "Period History", icon: "◷" },
     ...(user.role === "admin" ? [
       { id: "topup",   label: "Cashbook Top-Up", icon: "⊕" },
+      { id: "allocate", label: "Allocate to Vote", icon: "⇢" },
       { id: "users",   label: "System Users", icon: "▣" },
       { id: "summary", label: "Summary Report", icon: "◈" },
     ] : []),
@@ -201,7 +201,7 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
       <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid #d1d9e6" }}>
         <GovCrest size={36} />
         <div>
-          <div className="font-serif font-bold text-[#1a2744] text-sm leading-tight">Tanzania Police Force</div>
+          <div className="font-serif font-bold text-[#1a2744] text-sm leading-tight">YS CashBook &amp; VoteBook System</div>
           <div className="font-mono text-[9px] text-[#c9a227] uppercase tracking-widest mt-0.5">Votebook System</div>
         </div>
       </div>
@@ -262,8 +262,8 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
 // ══════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════
-function Dashboard({ cb, user, stations, onAction }: {
-  cb: CashbookState; user: SessionUser; stations: Station[]; onAction: (v: string) => void
+function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
+  cb: CashbookState; user: SessionUser; stations: Station[]; voteCashbook: VoteCashbookState; onAction: (v: string) => void
 }) {
   const bal = currentBalance(cb)
   const todayStr = new Date().toISOString().slice(0, 10)
@@ -273,6 +273,11 @@ function Dashboard({ cb, user, stations, onAction }: {
   const stationTotal = stationEntries.reduce((s, e) => s + e.debit, 0)
   const recentEntries = cb.entries.slice(-5).reverse()
   const pct = cb.openingBalance > 0 ? Math.min(100, (bal / cb.openingBalance) * 100) : 0
+  const allocatedTotal = voteCashbook.allocations.reduce((sum, a) => sum + a.amount, 0)
+  const stationUsed = voteCashbook.allocations.reduce((sum, a) => sum + a.used, 0)
+  const stationRemaining = voteCashbook.allocations.reduce((sum, a) => sum + a.remaining, 0)
+  const unallocatedBank = bal - allocatedTotal
+  const reconciliationDifference = bal - unallocatedBank - allocatedTotal
 
   const StatCard = ({ label, value, sub, color = "#1a2744" }: { label: string; value: string; sub?: string; color?: string }) => (
     <div className="gov-card p-4">
@@ -335,6 +340,37 @@ function Dashboard({ cb, user, stations, onAction }: {
         <StatCard label="Stations Active" value={[...new Set(cb.entries.map(e => e.station))].length.toString()} sub={`of ${stations.length} stations`} color="#c9a227"/>
       </div>
 
+      {user.role === "admin" && (
+        <div className="gov-card mb-6">
+          <div className="px-5 py-3 flex items-center justify-between" style={{ background: "#f4f7fc", borderBottom: "1px solid #d1d9e6" }}>
+            <div>
+              <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest">Central Finance Reconciliation</div>
+              <h2 className="font-serif font-bold text-[#1a2744] text-base mt-1">Cash in Bank vs Station Vote Funds</h2>
+            </div>
+            <span className={`chip ${Math.abs(reconciliationDifference) < 0.01 ? "chip-green" : "chip-amber"}`}>
+              {Math.abs(reconciliationDifference) < 0.01 ? "BALANCED" : "CHECK DIFFERENCE"}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 p-5">
+            {[
+              ["Cash in Bank", bal, "#047857"],
+              ["Allocated to Stations", allocatedTotal, "#1e40af"],
+              ["Consumed by Stations", stationUsed, "#991b1b"],
+              ["Unused Station Funds", stationRemaining, "#b45309"],
+              ["Unallocated Bank Funds", unallocatedBank, unallocatedBank < 0 ? "#991b1b" : "#1a2744"],
+            ].map(([label, value, color]) => (
+              <div key={label}>
+                <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
+                <div className="font-mono text-sm font-semibold mt-1" style={{ color: String(color) }}>TSh {fmtMoney(Number(value))}</div>
+              </div>
+            ))}
+          </div>
+          <div className="px-5 pb-4 font-sans text-xs text-[#4b5d84]">
+            Check: Cash in Bank = Unallocated Bank Funds + Allocated to Stations. Unaccounted difference: <strong className={Math.abs(reconciliationDifference) < 0.01 ? "text-emerald-700" : "text-red-700"}>TSh {fmtMoney(reconciliationDifference)}</strong>
+          </div>
+        </div>
+      )}
+
       {/* Recent activity */}
       <div className="gov-card">
         <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid #d1d9e6" }}>
@@ -380,28 +416,102 @@ function Dashboard({ cb, user, stations, onAction }: {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// ALLOCATE FUNDS TO A VOTE (admin only)
+// ══════════════════════════════════════════════════════════════════════════
+function AllocationForm({ stations, onSave }: {
+  stations: Station[]; onSave: (p: AllocationPayload) => Promise<VoteAllocation>
+}) {
+  const [station, setStation] = useState("")
+  const [amount, setAmount] = useState("")
+  const [description, setDescription] = useState("")
+  const [reference, setReference] = useState("")
+  const [message, setMessage] = useState("")
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault(); setError(""); setMessage("")
+    if (!station || !amount || Number(amount) <= 0 || !description.trim()) {
+      setError("Select a station, then enter a positive amount and description.")
+      return
+    }
+    setSaving(true)
+    try {
+      const allocation = await onSave({ amount, station, description: description.trim(), reference: reference.trim() })
+      setMessage(`${CUR} ${fmtMoney(allocation.amount)} allocated to ${allocation.station}.`)
+      setStation(""); setAmount(""); setDescription(""); setReference("")
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : "Failed to allocate funds.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8">
+      <div className="max-w-2xl">
+        <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
+          <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Central Finance · Vote Cashbook</div>
+          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Allocate Funds to Vote</h1>
+        </div>
+        {message && <div className="mb-4 px-4 py-3 text-sm text-emerald-800" style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 3 }}>{message}</div>}
+        {error && <div className="mb-4 px-4 py-3 text-sm text-red-800" style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 3 }}>{error}</div>}
+        <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Station</label>
+              <select className="gov-input" value={station} onChange={e => setStation(e.target.value)}>
+                <option value="">— Select Station —</option>
+                {stations.map(s => <option key={s.name} value={s.name}>{s.name} (Sub-Vote {s.subVote})</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Amount to Allocate (TSh)</label>
+            <input type="number" min="0.01" step="0.01" className="gov-input" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Description</label>
+            <input className="gov-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Q3 operational allocation" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Allocation Reference</label>
+            <input className="gov-input" value={reference} onChange={e => setReference(e.target.value)} placeholder="Optional treasury or internal reference" />
+          </div>
+          <div className="flex justify-end pt-2" style={{ borderTop: "1px solid #d1d9e6" }}>
+            <button type="submit" className="gov-btn-gold" disabled={saving}>{saving ? "Allocating…" : "Allocate Funds"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // NEW VOTEBOOK ENTRY
 // ══════════════════════════════════════════════════════════════════════════
-function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
-  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: Station[]; onSave: (p: PaymentPayload) => Promise<CashbookEntry>
+function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
+  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: Station[]; voteCashbook: VoteCashbookState; onSave: (p: PaymentPayload) => Promise<VoteExpenditure>
 }) {
   const [selectedVote, setSelectedVote] = useState<VoteItem | null>(null)
-  const [stationName, setStationName] = useState("")
+  const [allocationId, setAllocationId] = useState<number | null>(null)
   const [amount, setAmount] = useState("")
   const [payee, setPayee] = useState("")
   const [purpose, setPurpose] = useState("")
   const [receiptNo, setReceiptNo] = useState("")
   const [cashbookRef, setCashbookRef] = useState("")
-  const [success, setSuccess] = useState<CashbookEntry | null>(null)
+  const [success, setSuccess] = useState<VoteExpenditure | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [posting, setPosting] = useState(false)
 
-  const bal = currentBalance(cb)
+  const allocation = voteCashbook.allocations.find(a => a.id === allocationId)
+  const stationName = allocation?.station || ""
+  const bal = allocation?.remaining ?? 0
   const amt = Number(amount) || 0
 
   function validate() {
     const e: Record<string, string> = {}
-    if (!stationName) e.station = "Please select the station this payment belongs to"
+    if (!allocation) e.vote = "Please select a funded vote allocation"
     if (!selectedVote) e.vote = "Please select a vote item"
     if (!amount || isNaN(amt) || amt <= 0) e.amount = "Enter a valid amount greater than zero"
     if (amt > bal) e.amount = `Insufficient balance. Available: TSh ${fmtMoney(bal)}`
@@ -413,20 +523,20 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!validate() || !selectedVote) return
+    if (!validate() || !allocation) return
     setPosting(true)
     try {
       const entry = await onSave({
-        voteCode: selectedVote.code,
+        allocationId: allocation.id,
+        voteCode: selectedVote?.code || "",
         amount: amount,
         payee: payee.trim(),
         purpose: purpose.trim(),
         receiptNo: receiptNo.trim(),
         cashbookRef: cashbookRef.trim(),
-        station: stationName,
       })
       setSuccess(entry)
-      setStationName(""); setSelectedVote(null); setAmount(""); setPayee(""); setPurpose(""); setReceiptNo(""); setCashbookRef("")
+      setAllocationId(null); setAmount(""); setPayee(""); setPurpose(""); setReceiptNo(""); setCashbookRef("")
       setTimeout(() => setSuccess(null), 6000)
     } catch (err) {
       setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to post entry. Please try again." }))
@@ -469,27 +579,25 @@ function NewEntryForm({ user, cb, voteItems, stations, onSave }: {
               ✓ Entry Posted Successfully — {success.id}
             </div>
             <div className="font-mono text-xs text-emerald-700">
-              {CUR} {fmtMoney(success.debit)} debited · New balance: {CUR} {fmtMoney(success.balance)}
+              {CUR} {fmtMoney(success.amount)} recorded against {success.allocationReference}.
             </div>
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
-          {/* Station */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Station <span className="text-red-500">*</span>
+              Funded Vote Allocation <span className="text-red-500">*</span>
             </label>
-            <select
-              className={`gov-input ${errors.station ? "gov-input-error" : ""}`}
-              value={stationName}
-              onChange={e => { setStationName(e.target.value); setErrors(p => ({ ...p, station: "" })) }}>
-              <option value="">— Select Station —</option>
-              {stations.map(s => <option key={s.name} value={s.name}>{s.name} (Sub-Vote {s.subVote})</option>)}
+            <select className={`gov-input ${errors.vote ? "gov-input-error" : ""}`} value={allocationId ?? ""}
+              onChange={e => { setAllocationId(e.target.value ? Number(e.target.value) : null); setErrors(p => ({ ...p, vote: "" })) }}>
+              <option value="">— Select funded allocation —</option>
+              {voteCashbook.allocations.filter(a => a.remaining > 0).map(a => (
+                <option key={a.id} value={a.id}>{a.station} · Remaining TSh {fmtMoney(a.remaining)}</option>
+              ))}
             </select>
-            {errors.station && <p className="font-sans text-xs text-red-600 mt-1">{errors.station}</p>}
+            {errors.vote && <p className="font-sans text-xs text-red-600 mt-1">{errors.vote}</p>}
           </div>
-
           {/* Vote selector */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
@@ -724,32 +832,54 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station
 // ══════════════════════════════════════════════════════════════════════════
 // VOTEBOOK RECORDS (votebook entries only, by station)
 // ══════════════════════════════════════════════════════════════════════════
-function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stations: Station[]; voteItems: VoteItem[] }) {
+function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: VoteCashbookState; stations: Station[]; voteItems: VoteItem[] }) {
   const [filterStation, setFilterStation] = useState("all")
   const [filterVote, setFilterVote] = useState("all")
   const [search, setSearch] = useState("")
 
-  const payments = cb.entries.filter(e => e.type === "payment")
+  const payments = voteCashbook.expenditures
   const filtered = useMemo(() =>
     [...payments].reverse().filter(e => {
       if (filterStation !== "all" && e.station !== filterStation) return false
       if (filterVote !== "all" && e.voteCode !== filterVote) return false
       if (search) {
         const q = search.toLowerCase()
-        if (![e.description, e.payee, e.voteCode, e.id, e.officerName, e.purpose].some(f => f.toLowerCase().includes(q))) return false
+        if (![e.voteDescription, e.payee, e.voteCode, e.id, e.officerName, e.purpose].some(f => f.toLowerCase().includes(q))) return false
       }
       return true
     }),
   [payments, filterStation, filterVote, search])
 
   const uniqueCodes = [...new Set(payments.map(e => e.voteCode))]
-  const total = filtered.reduce((s, e) => s + e.debit, 0)
+  const total = filtered.reduce((s, e) => s + e.amount, 0)
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-6 lg:p-8">
       <div className="mb-5 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Votebook Module</div>
         <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Votebook Records</h1>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-5">
+        {voteCashbook.allocations.map(a => (
+          <div key={a.id} className="gov-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest">{a.station} · Sub-Vote {a.subVote}</div>
+                <div className="font-sans font-semibold text-sm text-[#1a2744] mt-1">Station allocation</div>
+              </div>
+              <span className={`chip ${a.remaining > 0 ? "chip-green" : "chip-amber"}`}>{a.remaining > 0 ? "AVAILABLE" : "USED"}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-4">
+              {[["Allocated", a.amount], ["Used", a.used], ["Remaining", a.remaining]].map(([label, value]) => (
+                <div key={label}>
+                  <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
+                  <div className="font-mono text-xs font-semibold text-[#1a2744] mt-1">TSh {fmtMoney(Number(value))}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4">
@@ -801,7 +931,7 @@ function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stati
                   <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
                   <td className="px-4 py-2.5 doc-line">
                     <span className="chip chip-blue">{e.voteCode}</span>
-                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">{e.voteItem} · {e.voteSubItem}</div>
+                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">Sub-Vote {e.subVote} · {e.allocationReference}</div>
                   </td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line font-medium">{e.voteDescription}</td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">
@@ -812,7 +942,7 @@ function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stati
                     <div className="truncate">{e.purpose}</div>
                   </td>
                   <td className="px-4 py-2.5 font-mono text-sm font-semibold text-right doc-line" style={{ color: "#991b1b" }}>
-                    {fmtMoney(e.debit)}
+                    {fmtMoney(e.amount)}
                   </td>
                   <td className="px-4 py-2.5 font-sans text-xs text-[#4b5d84] doc-line">{e.officerName}</td>
                 </tr>
@@ -828,10 +958,11 @@ function VotebookRecords({ cb, stations, voteItems }: { cb: CashbookState; stati
 // ══════════════════════════════════════════════════════════════════════════
 // CASHBOOK TOP-UP (admin only)
 // ══════════════════════════════════════════════════════════════════════════
-function TopUpForm({ cb, user, onTopUp, onSetOpening }: {
+function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
   cb: CashbookState; user: SessionUser
   onTopUp: (p: CreditPayload) => Promise<CashbookEntry>
   onSetOpening: (amount: number) => Promise<void>
+  onClosePeriod: () => Promise<string>
 }) {
   const [mode, setMode] = useState<"topup" | "opening">("topup")
   const [amount, setAmount] = useState("")
@@ -840,6 +971,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening }: {
   const [openAmt, setOpenAmt] = useState(cb.openingBalance.toString())
   const [success, setSuccess] = useState("")
   const [err, setErr] = useState("")
+  const [closing, setClosing] = useState(false)
 
   const bal = currentBalance(cb)
 
@@ -889,12 +1021,34 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening }: {
     }
   }
 
+  async function handleClosePeriod() {
+    if (!window.confirm(`Close accounting period ${cb.period?.key || "current month"}? New entries will be recorded in the next period.`)) return
+    setErr(""); setClosing(true)
+    try {
+      setSuccess(await onClosePeriod())
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : "Failed to close the accounting period.")
+    } finally {
+      setClosing(false)
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6 lg:p-8">
       <div className="max-w-lg">
         <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
           <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Administrator · Finance</div>
           <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Cashbook Management</h1>
+        </div>
+
+        <div className="mb-5 px-4 py-3 gov-card flex items-center justify-between gap-4">
+          <div>
+            <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Open Accounting Period</div>
+            <div className="font-mono font-semibold text-[#1a2744]">{cb.period?.key || "Current month"}</div>
+          </div>
+          <button type="button" onClick={handleClosePeriod} disabled={closing} className="gov-btn-secondary">
+            {closing ? "Closing…" : "Close Month & Carry Forward"}
+          </button>
         </div>
 
         {/* Current balance */}
@@ -1084,6 +1238,63 @@ function SummaryReport({ cb }: { cb: CashbookState }) {
   )
 }
 
+function PeriodHistory({ token }: { token: string }) {
+  const [periods, setPeriods] = useState<AccountingPeriod[]>([])
+  const [selected, setSelected] = useState<AccountingPeriod | null>(null)
+  const [cashbook, setCashbook] = useState<CashbookState | null>(null)
+  const [votes, setVotes] = useState<VoteCashbookState | null>(null)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    api.accountingPeriods(token).then(r => {
+      setPeriods(r.periods)
+      if (r.periods[0]) setSelected(r.periods[0])
+    }).catch(e => setError(e instanceof Error ? e.message : "Failed to load periods."))
+  }, [token])
+
+  useEffect(() => {
+    if (!selected) return
+    api.accountingPeriod(token, selected.key).then(r => {
+      setCashbook(r.cashbook); setVotes(r.voteCashbook); setError("")
+    }).catch(e => setError(e instanceof Error ? e.message : "Failed to load period history."))
+  }, [token, selected])
+
+  const bankClosing = cashbook ? cashbook.openingBalance + cashbook.entries.reduce((sum, e) => sum + e.credit - e.debit, 0) : 0
+  const used = votes?.allocations.reduce((sum, a) => sum + a.used, 0) || 0
+  return (
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8">
+      <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
+        <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Read-only historical records</div>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Accounting Period History</h1>
+      </div>
+      {error && <div className="mb-4 px-4 py-3 text-sm text-red-800" style={{ background: "#fee2e2", border: "1px solid #fca5a5" }}>{error}</div>}
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <select className="gov-input" value={selected?.key || ""} onChange={e => setSelected(periods.find(p => p.key === e.target.value) || null)}>
+          {periods.map(p => <option key={p.key} value={p.key}>{p.key} · {p.status.toUpperCase()}</option>)}
+        </select>
+        {selected && <span className="font-mono text-xs text-[#8a96af]">{selected.startsOn.slice(0, 10)} to {selected.endsOn.slice(0, 10)}</span>}
+      </div>
+      {selected && cashbook && votes && (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            {[["Opening Bank", cashbook.openingBalance], ["Closing Bank", bankClosing], ["Allocations", votes.allocations.reduce((s, a) => s + a.amount, 0)], ["Vote Expenditure", used]].map(([label, value]) => (
+              <div key={label} className="gov-card p-4"><div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-2">{label}</div><div className="font-mono text-lg font-semibold text-[#1a2744]">TSh {fmtMoney(Number(value))}</div></div>
+            ))}
+          </div>
+          <div className="gov-card overflow-hidden mb-6">
+            <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Bank Transactions</h2></div>
+            {cashbook.entries.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No bank transactions in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{cashbook.entries.map(e => <div key={e.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{e.description}</span><span className="font-mono">{e.credit ? `+TSh ${fmtMoney(e.credit)}` : `-TSh ${fmtMoney(e.debit)}`}</span></div>)}</div>}
+          </div>
+          <div className="gov-card overflow-hidden">
+            <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Vote Expenditure</h2></div>
+            {votes.expenditures.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No vote expenditures in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{votes.expenditures.map(e => <div key={e.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{e.station} · {e.voteCode} · {e.payee}</span><span className="font-mono">TSh {fmtMoney(e.amount)}</span></div>)}</div>}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // ROOT APP
 // ══════════════════════════════════════════════════════════════════════════
@@ -1093,6 +1304,7 @@ export default function App() {
   const token = session?.token ?? null
   const [view, setView] = useState("dashboard")
   const [cb, setCb] = useState<CashbookState>({ openingBalance: 0, entries: [] })
+  const [voteCashbook, setVoteCashbook] = useState<VoteCashbookState>({ allocations: [], expenditures: [] })
   const [stations, setStations] = useState<Station[]>([])
   const [voteItems, setVoteItems] = useState<VoteItem[]>([])
   const [dataErr, setDataErr] = useState("")
@@ -1103,11 +1315,12 @@ export default function App() {
   useEffect(() => {
     if (!token) return
     setDataErr("")
-    Promise.all([api.bootstrap(token), api.cashbook(token)])
-      .then(([b, c]) => {
+    Promise.all([api.bootstrap(token), api.cashbook(token), api.voteCashbook(token)])
+      .then(([b, c, v]) => {
         setStations(b.stations)
         setVoteItems(b.voteItems)
         setCb(c)
+        setVoteCashbook(v)
       })
       .catch(e => {
         const msg = e instanceof Error ? e.message : "Failed to load data."
@@ -1132,10 +1345,16 @@ export default function App() {
     setView("dashboard")
   }
 
-  async function addPayment(p: PaymentPayload): Promise<CashbookEntry> {
+  async function addPayment(p: PaymentPayload): Promise<VoteExpenditure> {
     const res = await api.addPayment(token!, p)
-    setCb({ openingBalance: res.openingBalance, entries: res.entries })
-    return res.entry
+    setVoteCashbook({ allocations: res.allocations, expenditures: res.expenditures })
+    return res.expenditure
+  }
+
+  async function addAllocation(p: AllocationPayload): Promise<VoteAllocation> {
+    const res = await api.addAllocation(token!, p)
+    setVoteCashbook({ allocations: res.allocations, expenditures: res.expenditures })
+    return res.allocation
   }
 
   async function addCredit(p: CreditPayload): Promise<CashbookEntry> {
@@ -1146,6 +1365,12 @@ export default function App() {
 
   async function setOpening(amount: number): Promise<void> {
     setCb(await api.setOpeningBalance(token!, amount))
+  }
+
+  async function closePeriod(): Promise<string> {
+    const result = await api.closeAccountingPeriod(token!)
+    setDataTick(t => t + 1)
+    return `${result.closed.key} closed. ${result.closed.carriedAllocations} unused station allocation(s) carried into ${result.current.key}.`
   }
 
   if (!user) return <LoginScreen onLogin={handleLogin} />
@@ -1180,7 +1405,7 @@ export default function App() {
           >
             ☰
           </button>
-          <div className="font-serif font-bold text-white text-sm">Police Votebook System</div>
+          <div className="font-serif font-bold text-white text-sm">YS CashBook &amp; VoteBook System</div>
           <div className="font-mono text-xs" style={{ color: "#c9a227" }}>TSh {fmtMoney(bal)}</div>
         </div>
 
@@ -1192,17 +1417,19 @@ export default function App() {
           </div>
         )}
 
-        {view === "dashboard" && <Dashboard cb={cb} user={user} stations={stations} onAction={setView} />}
-        {view === "new"       && <NewEntryForm user={user} cb={cb} voteItems={voteItems} stations={stations} onSave={addPayment} />}
+        {view === "dashboard" && <Dashboard cb={cb} user={user} stations={stations} voteCashbook={voteCashbook} onAction={setView} />}
+        {view === "new"       && <NewEntryForm user={user} cb={cb} voteItems={voteItems} stations={stations} voteCashbook={voteCashbook} onSave={addPayment} />}
         {view === "cashbook"  && <CashbookLedger cb={cb} stations={stations} />}
-        {view === "votebook"  && <VotebookRecords cb={cb} stations={stations} voteItems={voteItems} />}
+        {view === "votebook"  && <VotebookRecords voteCashbook={voteCashbook} stations={stations} voteItems={voteItems} />}
+        {view === "allocate"  && user.role === "admin" && <AllocationForm stations={stations} onSave={addAllocation} />}
         {view === "topup"     && user.role === "admin" && (
-          <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} />
+          <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} onClosePeriod={closePeriod} />
         )}
         {view === "users"     && user.role === "admin" && (
           <UsersAdmin token={token!} user={user} />
         )}
         {view === "summary"   && user.role === "admin" && <SummaryReport cb={cb} />}
+        {view === "history"   && <PeriodHistory token={token!} />}
       </div>
     </div>
   )

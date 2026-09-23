@@ -101,12 +101,83 @@ function rowToEntry(r) {
   }
 }
 
-async function getCashbookState() {
-  const settings = await pool.query("SELECT opening_balance FROM cashbook_settings WHERE id = 1")
-  const entries = await pool.query("SELECT * FROM cashbook_entries ORDER BY id ASC")
+async function getCurrentPeriod(client = pool) {
+  const r = await client.query("SELECT *, to_char(starts_on, 'YYYY-MM-DD') AS starts_label, to_char(ends_on, 'YYYY-MM-DD') AS ends_label FROM accounting_periods WHERE status = 'open' ORDER BY id DESC LIMIT 1")
+  if (!r.rows[0]) throw new HttpError(409, "No open accounting period. Ask an administrator to open the next month.")
+  return r.rows[0]
+}
+
+async function getPeriodByKey(key) {
+  const r = await pool.query("SELECT *, to_char(starts_on, 'YYYY-MM-DD') AS starts_label, to_char(ends_on, 'YYYY-MM-DD') AS ends_label FROM accounting_periods WHERE period_key = $1", [key])
+  if (!r.rows[0]) throw new HttpError(404, "Accounting period not found.")
+  return r.rows[0]
+}
+
+async function getCashbookState(period = null) {
+  period ||= await getCurrentPeriod()
+  const settings = await pool.query("SELECT opening_bank_balance FROM accounting_periods WHERE id = $1", [period.id])
+  const entries = await pool.query("SELECT * FROM cashbook_entries WHERE period_id = $1 ORDER BY id ASC", [period.id])
   return {
-    openingBalance: Number(settings.rows[0]?.opening_balance ?? 0),
+    openingBalance: Number(settings.rows[0]?.opening_bank_balance ?? 0),
     entries: entries.rows.map(rowToEntry),
+    period: { key: period.period_key, startsOn: period.starts_label, endsOn: period.ends_label },
+  }
+}
+
+function rowToAllocation(r) {
+  return {
+    id: r.id,
+    reference: r.allocation_ref,
+    timestamp: r.created_at.toISOString(),
+    station: r.station,
+    subVote: r.sub_vote,
+    amount: Number(r.amount),
+    used: Number(r.used),
+    remaining: Number(r.amount) - Number(r.used),
+    allocationReference: r.reference,
+    description: r.description,
+    officer: r.officer,
+    officerName: r.officer_name,
+  }
+}
+
+async function getVoteCashbookState(period = null) {
+  period ||= await getCurrentPeriod()
+  const allocations = await pool.query(`
+    SELECT a.*, COALESCE(SUM(e.amount), 0) AS used
+    FROM vote_allocations a
+    LEFT JOIN vote_expenditures e ON e.allocation_id = a.id
+    WHERE a.period_id = $1
+    GROUP BY a.id
+    ORDER BY a.id ASC
+  `, [period.id])
+  const expenditures = await pool.query(`
+    SELECT e.*, a.allocation_ref
+    FROM vote_expenditures e
+    JOIN vote_allocations a ON a.id = e.allocation_id
+    WHERE e.period_id = $1
+    ORDER BY e.id ASC
+  `, [period.id])
+  return {
+    period: { key: period.period_key, startsOn: period.starts_label, endsOn: period.ends_label },
+    allocations: allocations.rows.map(rowToAllocation),
+    expenditures: expenditures.rows.map(r => ({
+      id: r.expenditure_ref,
+      timestamp: r.created_at.toISOString(),
+      allocationId: r.allocation_id,
+      allocationReference: r.allocation_ref,
+      station: r.station,
+      subVote: r.sub_vote,
+      voteCode: r.vote_code,
+      voteDescription: r.vote_description,
+      payee: r.payee,
+      purpose: r.purpose,
+      receiptNo: r.receipt_no,
+      cashbookRef: r.cashbook_ref,
+      amount: Number(r.amount),
+      officer: r.officer,
+      officerName: r.officer_name,
+    })),
   }
 }
 
@@ -117,11 +188,12 @@ async function insertEntry(f) {
   try {
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
+    const period = await getCurrentPeriod(client)
     const opening = Number(
-      (await client.query("SELECT opening_balance FROM cashbook_settings WHERE id = 1")).rows[0].opening_balance,
+      (await client.query("SELECT opening_bank_balance FROM accounting_periods WHERE id = $1", [period.id])).rows[0].opening_bank_balance,
     )
     const net = Number(
-      (await client.query("SELECT COALESCE(SUM(credit - debit), 0) AS net FROM cashbook_entries")).rows[0].net,
+      (await client.query("SELECT COALESCE(SUM(credit - debit), 0) AS net FROM cashbook_entries WHERE period_id = $1", [period.id])).rows[0].net,
     )
     const balance = opening + net + f.credit - f.debit
     if (balance < 0) {
@@ -131,13 +203,13 @@ async function insertEntry(f) {
     const r = await client.query(
       `INSERT INTO cashbook_entries
          (entry_ref, type, description, station, officer, officer_name,
-          vote_code, vote_description, vote_sub_vote, vote_item, vote_sub_item,
+           vote_code, vote_description, vote_sub_vote, vote_item, vote_sub_item, period_id,
           payee, purpose, receipt_no, cashbook_ref, debit, credit, balance)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        RETURNING *`,
       [
         entryRef, f.type, f.description, f.station, f.officer, f.officerName,
-        f.voteCode, f.voteDescription, f.voteSubVote, f.voteItem, f.voteSubItem,
+        f.voteCode, f.voteDescription, f.voteSubVote, f.voteItem, f.voteSubItem, period.id,
         f.payee, f.purpose, f.receiptNo, f.cashbookRef,
         f.debit.toFixed(2), f.credit.toFixed(2), balance.toFixed(2),
       ],
@@ -222,43 +294,69 @@ app.get("/api/cashbook", auth, async (req, res, next) => {
 })
 
 app.post("/api/cashbook/payments", auth, async (req, res, next) => {
+  const client = await pool.connect()
   try {
-    const { voteCode, amount, payee, purpose, receiptNo, cashbookRef } = req.body || {}
+    const { amount, payee, purpose, receiptNo, cashbookRef } = req.body || {}
     const amt = asNumber(amount)
     if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
     const payeeName = asString(payee).trim()
     if (!payeeName) throw new HttpError(400, "Payee name is required.")
     const purposeText = asString(purpose).trim()
     if (!purposeText) throw new HttpError(400, "Purpose / description is required.")
-    // Officers can post for any station — the station is chosen per entry.
-    const station = asString(req.body?.station).trim()
-    if (!station) throw new HttpError(400, "Please select the station this payment belongs to.")
-    const stationRow = (await pool.query("SELECT sub_vote FROM stations WHERE name = $1", [station])).rows[0]
-    if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
-    const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [asString(voteCode)])).rows[0]
+    const allocationId = Number(req.body?.allocationId)
+    if (!Number.isInteger(allocationId) || allocationId <= 0) throw new HttpError(400, "Please select a vote allocation.")
+    const voteCode = asString(req.body?.voteCode).trim()
+    const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [voteCode])).rows[0]
     if (!vote) throw new HttpError(400, "Please select a valid vote item.")
 
-    const entry = await insertEntry({
-      type: "payment",
-      description: vote.description,
-      station,
-      officer: req.user.username,
-      officerName: req.user.name,
-      voteCode: vote.code,
-      voteDescription: vote.description,
-      voteSubVote: stationRow.sub_vote,
-      voteItem: vote.item,
-      voteSubItem: vote.sub_item,
-      payee: payeeName,
-      purpose: purposeText,
-      receiptNo: asString(receiptNo).trim(),
-      cashbookRef: asString(cashbookRef).trim(),
-      debit: amt,
-      credit: 0,
-    })
-    res.status(201).json({ ...(await getCashbookState()), entry })
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(913557)")
+    const allocation = (await client.query(
+      "SELECT a.* FROM vote_allocations a JOIN accounting_periods p ON p.id = a.period_id WHERE a.id = $1 AND p.status = 'open' FOR UPDATE",
+      [allocationId],
+    )).rows[0]
+    if (!allocation) throw new HttpError(400, "Please select a valid vote allocation.")
+    const used = Number((await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS used FROM vote_expenditures WHERE allocation_id = $1",
+      [allocationId],
+    )).rows[0].used)
+    const remaining = Number(allocation.amount) - used
+    if (amt > remaining) throw new HttpError(400, `Insufficient vote allocation. Available: TSh ${money(remaining)}`)
+
+    const expenditureRef = genRef("VE")
+    const r = await client.query(
+      `INSERT INTO vote_expenditures
+        (expenditure_ref, allocation_id, station, sub_vote, vote_code, vote_description, period_id,
+         payee, purpose, receipt_no, cashbook_ref, amount, officer, officer_name)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       RETURNING *`,
+      [expenditureRef, allocation.id, allocation.station, allocation.sub_vote, vote.code,
+        vote.description, allocation.period_id, payeeName, purposeText, asString(receiptNo).trim(),
+        asString(cashbookRef).trim(), amt.toFixed(2), req.user.username, req.user.name],
+    )
+    await client.query("COMMIT")
+    res.status(201).json({ ...(await getVoteCashbookState()), expenditure: {
+      id: r.rows[0].expenditure_ref,
+      timestamp: r.rows[0].created_at.toISOString(),
+      allocationId: r.rows[0].allocation_id,
+      allocationReference: allocation.allocation_ref,
+      station: r.rows[0].station,
+      subVote: r.rows[0].sub_vote,
+      voteCode: r.rows[0].vote_code,
+      voteDescription: r.rows[0].vote_description,
+      payee: r.rows[0].payee,
+      purpose: r.rows[0].purpose,
+      receiptNo: r.rows[0].receipt_no,
+      cashbookRef: r.rows[0].cashbook_ref,
+      amount: Number(r.rows[0].amount),
+      officer: r.rows[0].officer,
+      officerName: r.rows[0].officer_name,
+    } })
   } catch (e) {
+    await client.query("ROLLBACK").catch(() => {})
     next(e)
+  } finally {
+    client.release()
   }
 })
 
@@ -298,10 +396,128 @@ app.put("/api/cashbook/opening-balance", auth, requireCentralFinanceAdmin, async
   try {
     const amt = asNumber(req.body?.amount)
     if (!Number.isFinite(amt) || amt < 0) throw new HttpError(400, "Enter a valid opening balance.")
-    await pool.query("UPDATE cashbook_settings SET opening_balance = $1 WHERE id = 1", [amt.toFixed(2)])
+    const period = await getCurrentPeriod()
+    await pool.query("UPDATE accounting_periods SET opening_bank_balance = $1 WHERE id = $2", [amt.toFixed(2), period.id])
     res.json(await getCashbookState())
   } catch (e) {
     next(e)
+  }
+})
+
+app.get("/api/vote-cashbook", auth, async (req, res, next) => {
+  try {
+    res.json(await getVoteCashbookState())
+  } catch (e) {
+    next(e)
+  }
+})
+
+app.get("/api/accounting-periods", auth, async (req, res, next) => {
+  try {
+    const periods = await pool.query(`
+      SELECT p.period_key AS key, to_char(p.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(p.ends_on, 'YYYY-MM-DD') AS "endsOn",
+             p.status, p.opening_bank_balance AS "openingBankBalance",
+             COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries e WHERE e.period_id = p.id), 0) AS "bankMovement"
+      FROM accounting_periods p ORDER BY p.id DESC
+    `)
+    res.json({ periods: periods.rows.map(p => ({ ...p, openingBankBalance: Number(p.openingBankBalance), bankMovement: Number(p.bankMovement) })) })
+  } catch (e) { next(e) }
+})
+
+app.get("/api/accounting-periods/:key", auth, async (req, res, next) => {
+  try {
+    const period = await getPeriodByKey(req.params.key)
+    res.json({ cashbook: await getCashbookState(period), voteCashbook: await getVoteCashbookState(period) })
+  } catch (e) { next(e) }
+})
+
+app.post("/api/vote-allocations", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  const client = await pool.connect()
+  try {
+    const amount = asNumber(req.body?.amount)
+    const station = asString(req.body?.station).trim()
+    const description = asString(req.body?.description).trim()
+    const reference = asString(req.body?.reference).trim()
+    if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Enter a valid allocation amount.")
+    if (!station) throw new HttpError(400, "Please select a station.")
+    if (!description) throw new HttpError(400, "Allocation description is required.")
+
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(913557)")
+    const stationRow = (await client.query("SELECT sub_vote FROM stations WHERE name = $1", [station])).rows[0]
+    if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
+    const period = await getCurrentPeriod(client)
+    const bank = await client.query(`
+      SELECT
+        (SELECT opening_bank_balance FROM accounting_periods WHERE id = $1)
+        + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries WHERE period_id = $1), 0)
+        - COALESCE((SELECT SUM(amount) FROM vote_allocations WHERE period_id = $1), 0) AS available
+    `, [period.id])
+    const available = Number(bank.rows[0].available)
+    if (amount > available) throw new HttpError(400, `Insufficient unallocated bank funds. Available: TSh ${money(available)}`)
+
+    const allocationRef = genRef("VA")
+    const r = await client.query(
+      `INSERT INTO vote_allocations
+        (allocation_ref, station, sub_vote, amount, reference, description, officer, officer_name, period_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING *, 0::numeric AS used`,
+      [allocationRef, station, stationRow.sub_vote, amount.toFixed(2), reference, description, req.user.username, req.user.name, period.id],
+    )
+    await client.query("COMMIT")
+    res.status(201).json({ allocation: rowToAllocation(r.rows[0]), ...(await getVoteCashbookState()) })
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {})
+    next(e)
+  } finally {
+    client.release()
+  }
+})
+
+app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(913557)")
+    const period = await getCurrentPeriod(client)
+    const bank = Number((await client.query(
+      "SELECT opening_bank_balance + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries WHERE period_id = $1), 0) AS balance FROM accounting_periods WHERE id = $1",
+      [period.id],
+    )).rows[0].balance)
+    const next = (await client.query(
+      `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
+       VALUES (to_char(($1::date + interval '1 day'), 'YYYY-MM'), $1::date + interval '1 day',
+               ($1::date + interval '2 months - 1 day')::date, 'open', $2)
+       RETURNING *`,
+      [period.starts_on, bank.toFixed(2)],
+    )).rows[0]
+    const carry = await client.query(
+      `SELECT a.*, a.amount - COALESCE(SUM(e.amount), 0) AS remaining
+       FROM vote_allocations a
+       LEFT JOIN vote_expenditures e ON e.allocation_id = a.id
+       WHERE a.period_id = $1
+       GROUP BY a.id
+       HAVING a.amount - COALESCE(SUM(e.amount), 0) > 0`,
+      [period.id],
+    )
+    for (const allocation of carry.rows) {
+      await client.query(
+        `INSERT INTO vote_allocations
+          (allocation_ref, station, sub_vote, amount, reference, description, officer, officer_name, period_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [genRef("VA"), allocation.station, allocation.sub_vote, Number(allocation.remaining).toFixed(2),
+          `Carry-forward from ${period.period_key}`, `Unused balance carried forward from ${period.period_key}`,
+          req.user.username, req.user.name, next.id],
+      )
+    }
+    await client.query("UPDATE accounting_periods SET status = 'closed', closed_at = now() WHERE id = $1", [period.id])
+    await client.query("COMMIT")
+    res.json({ closed: { key: period.period_key, bankBalance: bank, carriedAllocations: carry.rowCount }, current: { key: next.period_key, openingBankBalance: Number(next.opening_bank_balance) } })
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {})
+    next(e)
+  } finally {
+    client.release()
   }
 })
 

@@ -45,22 +45,78 @@ export interface CashbookEntry {
 export interface CashbookState {
   openingBalance: number
   entries: CashbookEntry[]
+  period?: { key: string; startsOn: string; endsOn: string }
+}
+
+export interface VoteAllocation {
+  id: number
+  reference: string
+  timestamp: string
+  station: string
+  subVote: string
+  amount: number
+  used: number
+  remaining: number
+  allocationReference: string
+  description: string
+  officer: string
+  officerName: string
+}
+
+export interface VoteExpenditure {
+  id: string
+  timestamp: string
+  allocationId: number
+  allocationReference: string
+  station: string
+  subVote: string
+  voteCode: string
+  voteDescription: string
+  payee: string
+  purpose: string
+  receiptNo: string
+  cashbookRef: string
+  amount: number
+  officer: string
+  officerName: string
+}
+
+export interface VoteCashbookState {
+  allocations: VoteAllocation[]
+  expenditures: VoteExpenditure[]
+  period?: { key: string; startsOn: string; endsOn: string }
+}
+
+export interface AccountingPeriod {
+  key: string
+  startsOn: string
+  endsOn: string
+  status: "open" | "closed"
+  openingBankBalance: number
+  bankMovement: number
 }
 
 export interface PaymentPayload {
+  allocationId: number
   voteCode: string
   amount: string
   payee: string
   purpose: string
   receiptNo: string
   cashbookRef: string
-  station: string
 }
 
 export interface CreditPayload {
   amount: string
   description: string
   ref: string
+}
+
+export interface AllocationPayload {
+  amount: string
+  station: string
+  description: string
+  reference: string
 }
 
 export interface UserRecord {
@@ -141,8 +197,15 @@ export const api = {
 
   cashbook: (token: string) => request<CashbookState>("/api/cashbook", { token }),
 
+  voteCashbook: (token: string) => request<VoteCashbookState>("/api/vote-cashbook", { token }),
+
+  accountingPeriods: (token: string) => request<{ periods: AccountingPeriod[] }>("/api/accounting-periods", { token }),
+
+  accountingPeriod: (token: string, key: string) =>
+    request<{ cashbook: CashbookState; voteCashbook: VoteCashbookState }>(`/api/accounting-periods/${encodeURIComponent(key)}`, { token }),
+
   addPayment: (token: string, payload: PaymentPayload) =>
-    request<CashbookState & { entry: CashbookEntry }>("/api/cashbook/payments", {
+    request<VoteCashbookState & { expenditure: VoteExpenditure; openingBalance?: number; entries?: CashbookEntry[]; entry?: CashbookEntry }>("/api/cashbook/payments", {
       method: "POST",
       token,
       body: JSON.stringify(payload),
@@ -155,11 +218,24 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  addAllocation: (token: string, payload: AllocationPayload) =>
+    request<VoteCashbookState & { allocation: VoteAllocation }>("/api/vote-allocations", {
+      method: "POST",
+      token,
+      body: JSON.stringify(payload),
+    }),
+
   setOpeningBalance: (token: string, amount: number) =>
     request<CashbookState>("/api/cashbook/opening-balance", {
       method: "PUT",
       token,
       body: JSON.stringify({ amount }),
+    }),
+
+  closeAccountingPeriod: (token: string) =>
+    request<{ closed: { key: string; bankBalance: number; carriedAllocations: number }; current: { key: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
+      method: "POST",
+      token,
     }),
 
   // ── System users (admin · Central Finance only) ─────────────────────────
