@@ -278,7 +278,14 @@ app.get("/api/bootstrap", auth, async (req, res, next) => {
   try {
     const stations = (await pool.query('SELECT name, sub_vote AS "subVote" FROM stations ORDER BY id')).rows
     const voteItems = (
-      await pool.query('SELECT vote, item, sub_item AS "subItem", code, description FROM vote_items ORDER BY id')
+      await pool.query(`
+        SELECT v.vote, v.item, v.sub_item AS "subItem", v.code, v.description,
+               COALESCE(array_agg(s.station) FILTER (WHERE s.station IS NOT NULL), ARRAY[]::text[]) AS "allowedStations"
+        FROM vote_items v
+        LEFT JOIN vote_item_stations s ON s.vote_code = v.code
+        GROUP BY v.id
+        ORDER BY v.id
+      `)
     ).rows
     res.json({ stations, voteItems })
   } catch (e) {
@@ -307,9 +314,6 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
     const allocationId = Number(req.body?.allocationId)
     if (!Number.isInteger(allocationId) || allocationId <= 0) throw new HttpError(400, "Please select a vote allocation.")
     const voteCode = asString(req.body?.voteCode).trim()
-    const vote = (await pool.query("SELECT * FROM vote_items WHERE code = $1", [voteCode])).rows[0]
-    if (!vote) throw new HttpError(400, "Please select a valid vote item.")
-
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
     const allocation = (await client.query(
@@ -317,6 +321,15 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
       [allocationId],
     )).rows[0]
     if (!allocation) throw new HttpError(400, "Please select a valid vote allocation.")
+    const vote = (await client.query(`
+      SELECT v.* FROM vote_items v
+      WHERE v.code = $1
+        AND (
+          NOT EXISTS (SELECT 1 FROM vote_item_stations WHERE vote_code = v.code)
+          OR EXISTS (SELECT 1 FROM vote_item_stations WHERE vote_code = v.code AND station = $2)
+        )
+    `, [voteCode, allocation.station])).rows[0]
+    if (!vote) throw new HttpError(400, "This vote item is not available for the selected station.")
     const used = Number((await client.query(
       "SELECT COALESCE(SUM(amount), 0) AS used FROM vote_expenditures WHERE allocation_id = $1",
       [allocationId],

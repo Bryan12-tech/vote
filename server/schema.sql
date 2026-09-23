@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS vote_items (
   description TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS vote_item_stations (
+  vote_code TEXT NOT NULL REFERENCES vote_items(code) ON DELETE CASCADE,
+  station TEXT NOT NULL REFERENCES stations(name) ON DELETE CASCADE,
+  PRIMARY KEY (vote_code, station)
+);
+
 CREATE TABLE IF NOT EXISTS accounting_periods (
   id SERIAL PRIMARY KEY,
   period_key TEXT UNIQUE NOT NULL,

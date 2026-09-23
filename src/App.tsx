@@ -614,9 +614,9 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
                 setErrors(p => ({ ...p, vote: "" }))
               }}>
               <option value="">— Select Vote Item —</option>
-              {voteItems.map(v => (
+              {voteItems.filter(v => v.allowedStations.length === 0 || v.allowedStations.includes(stationName)).map(v => (
                 <option key={v.code + v.description} value={`${v.code}|${v.description}`}>
-                  {v.code}  ·  {v.description}
+                  {v.code}  ·  {v.description}{v.allowedStations.length > 0 ? " · Station-specific" : ""}
                 </option>
               ))}
             </select>

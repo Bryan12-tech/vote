@@ -18,6 +18,7 @@ export interface VoteItem {
   subItem: string
   code: string
   description: string
+  allowedStations: string[]
 }
 
 export interface CashbookEntry {

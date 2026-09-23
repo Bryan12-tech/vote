@@ -27,5 +27,14 @@ INSERT INTO vote_items (vote, item, sub_item, code, description) VALUES
   ('28', 'C02C02', 'RK001', '22010103', 'Water Transport'),
   ('28', 'E01C02', 'PK001', '22015107', 'Animal Feeds'),
   ('28', 'E01C01', 'PK001', '22001102', 'Computer Supplies & Accessories'),
-  ('28', 'E02C01', 'PK002', '22001101', 'Office Consumables')
+  ('28', 'E02C01', 'PK002', '22001101', 'Office Consumables'),
+  ('28', 'E01C01', 'PK001', '2201001', 'Ration food purchase'),
+  ('28', 'E01C01', 'PK001', '22010102', 'Ground'),
+  ('28', 'E01C01', 'PK001', '33181109', 'Deposit general')
 ON CONFLICT (code) DO NOTHING;
+
+-- Deposit general is restricted to the two Makao Kusini/Kaskazini stations.
+INSERT INTO vote_item_stations (vote_code, station) VALUES
+  ('33181109', 'Makao Kusini Pemba'),
+  ('33181109', 'Makao Kaskazini Pemba')
+ON CONFLICT DO NOTHING;
