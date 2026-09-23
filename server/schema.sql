@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS vote_expenditures (
   vote_description TEXT NOT NULL,
   payee TEXT NOT NULL,
   purpose TEXT NOT NULL,
+  voucher_no TEXT NOT NULL DEFAULT '',
   receipt_no TEXT NOT NULL DEFAULT '',
   cashbook_ref TEXT NOT NULL DEFAULT '',
   amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
@@ -107,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_vote_expenditures_allocation
 ALTER TABLE cashbook_entries ADD COLUMN IF NOT EXISTS period_id INTEGER REFERENCES accounting_periods(id);
 ALTER TABLE vote_allocations ADD COLUMN IF NOT EXISTS period_id INTEGER REFERENCES accounting_periods(id);
 ALTER TABLE vote_expenditures ADD COLUMN IF NOT EXISTS period_id INTEGER REFERENCES accounting_periods(id);
+ALTER TABLE vote_expenditures ADD COLUMN IF NOT EXISTS voucher_no TEXT NOT NULL DEFAULT '';
 
 INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
 VALUES (to_char(current_date, 'YYYY-MM'), date_trunc('month', current_date)::date,

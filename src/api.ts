@@ -74,6 +74,7 @@ export interface VoteExpenditure {
   voteDescription: string
   payee: string
   purpose: string
+  voucherNo: string
   receiptNo: string
   cashbookRef: string
   amount: number
@@ -102,6 +103,7 @@ export interface PaymentPayload {
   amount: string
   payee: string
   purpose: string
+  voucherNo: string
   receiptNo: string
   cashbookRef: string
 }

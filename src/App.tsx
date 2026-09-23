@@ -498,6 +498,7 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
   const [amount, setAmount] = useState("")
   const [payee, setPayee] = useState("")
   const [purpose, setPurpose] = useState("")
+  const [voucherNo, setVoucherNo] = useState("")
   const [receiptNo, setReceiptNo] = useState("")
   const [cashbookRef, setCashbookRef] = useState("")
   const [success, setSuccess] = useState<VoteExpenditure | null>(null)
@@ -532,11 +533,12 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
         amount: amount,
         payee: payee.trim(),
         purpose: purpose.trim(),
+        voucherNo: voucherNo.trim(),
         receiptNo: receiptNo.trim(),
         cashbookRef: cashbookRef.trim(),
       })
       setSuccess(entry)
-      setAllocationId(null); setAmount(""); setPayee(""); setPurpose(""); setReceiptNo(""); setCashbookRef("")
+      setAllocationId(null); setAmount(""); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
       setTimeout(() => setSuccess(null), 6000)
     } catch (err) {
       setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to post entry. Please try again." }))
@@ -666,8 +668,15 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
             {errors.purpose && <p className="font-sans text-xs text-red-600 mt-1">{errors.purpose}</p>}
           </div>
 
-          {/* Receipt + Cashbook ref */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* Voucher, receipt and cashbook references */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Voucher No.
+              </label>
+              <input type="text" className="gov-input" value={voucherNo}
+                onChange={e => setVoucherNo(e.target.value)} placeholder="e.g. VOU-00123" />
+            </div>
             <div>
               <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
                 Receipt No.
@@ -936,6 +945,7 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line font-medium">{e.voteDescription}</td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">
                     {e.payee}
+                    {e.voucherNo && <div className="font-mono text-[10px] text-[#8a96af]">Voucher: {e.voucherNo}</div>}
                     {e.receiptNo && <div className="font-mono text-[10px] text-[#8a96af]">{e.receiptNo}</div>}
                   </td>
                   <td className="px-4 py-2.5 font-sans text-xs text-[#4b5d84] doc-line max-w-[160px]">

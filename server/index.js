@@ -172,6 +172,7 @@ async function getVoteCashbookState(period = null) {
       voteDescription: r.vote_description,
       payee: r.payee,
       purpose: r.purpose,
+      voucherNo: r.voucher_no,
       receiptNo: r.receipt_no,
       cashbookRef: r.cashbook_ref,
       amount: Number(r.amount),
@@ -296,7 +297,7 @@ app.get("/api/cashbook", auth, async (req, res, next) => {
 app.post("/api/cashbook/payments", auth, async (req, res, next) => {
   const client = await pool.connect()
   try {
-    const { amount, payee, purpose, receiptNo, cashbookRef } = req.body || {}
+    const { amount, payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
     const amt = asNumber(amount)
     if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
     const payeeName = asString(payee).trim()
@@ -327,11 +328,11 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
     const r = await client.query(
       `INSERT INTO vote_expenditures
         (expenditure_ref, allocation_id, station, sub_vote, vote_code, vote_description, period_id,
-         payee, purpose, receipt_no, cashbook_ref, amount, officer, officer_name)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        payee, purpose, voucher_no, receipt_no, cashbook_ref, amount, officer, officer_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING *`,
       [expenditureRef, allocation.id, allocation.station, allocation.sub_vote, vote.code,
-        vote.description, allocation.period_id, payeeName, purposeText, asString(receiptNo).trim(),
+        vote.description, allocation.period_id, payeeName, purposeText, asString(voucherNo).trim(), asString(receiptNo).trim(),
         asString(cashbookRef).trim(), amt.toFixed(2), req.user.username, req.user.name],
     )
     await client.query("COMMIT")
@@ -346,6 +347,7 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
       voteDescription: r.rows[0].vote_description,
       payee: r.rows[0].payee,
       purpose: r.rows[0].purpose,
+      voucherNo: r.rows[0].voucher_no,
       receiptNo: r.rows[0].receipt_no,
       cashbookRef: r.rows[0].cashbook_ref,
       amount: Number(r.rows[0].amount),
