@@ -18,7 +18,10 @@ const USERS = [
   { username: "officer3", password: "pass1234", role: "officer", name: "Insp. J. Moyo" },
 ]
 
-async function waitForDb(retries = 10, delayMs = 3000) {
+async function waitForDb(retries = Number(process.env.DB_READY_RETRIES || 60), delayMs = Number(process.env.DB_READY_DELAY_MS || 5000)) {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is missing. Configure the Render PostgreSQL connection on the web service.")
+  }
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       await pool.query("SELECT 1")
@@ -28,7 +31,7 @@ async function waitForDb(retries = 10, delayMs = 3000) {
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
   }
-  throw new Error("Database did not become ready in time")
+  throw new Error(`Database did not become ready after ${retries} attempts. Check DATABASE_URL, database status, and Render network settings.`)
 }
 
 async function main() {
