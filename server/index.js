@@ -677,20 +677,25 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
       [period.starts_on],
     )
     const nextKey = nextKeyResult.rows[0].period_key
-    // A deployment can have the next month already present (for example after a
-    // previous close was interrupted after the period insert). Reuse that period
-    // instead of attempting a second INSERT into accounting_periods.
-    await client.query(
-      `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
-       VALUES (to_char(($1::date + interval '1 day'), 'YYYY-MM'), $1::date + interval '1 day',
-               ($1::date + interval '2 months - 1 day')::date, 'open', $2)
-       ON CONFLICT (period_key) DO NOTHING`,
-      [period.starts_on, bank.toFixed(2)],
-    )
-    const next = (await client.query(
+    // Look up the target before inserting. This avoids even attempting a duplicate
+    // insert when the target month was created by an earlier close/seed operation.
+    let next = (await client.query(
       "SELECT * FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
       [nextKey],
     )).rows[0]
+    if (!next) {
+      await client.query(
+        `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
+         VALUES (to_char(($1::date + interval '1 day'), 'YYYY-MM'), $1::date + interval '1 day',
+                 ($1::date + interval '2 months - 1 day')::date, 'open', $2)
+         ON CONFLICT (period_key) DO NOTHING`,
+        [period.starts_on, bank.toFixed(2)],
+      )
+      next = (await client.query(
+        "SELECT * FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
+        [nextKey],
+      )).rows[0]
+    }
     if (next.status !== "open") {
       throw new HttpError(409, `${nextKey} is already closed. Open the next accounting period before carrying forward balances.`)
     }
