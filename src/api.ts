@@ -244,6 +244,9 @@ export const api = {
   accountingPeriod: (token: string, key: string) =>
     request<{ cashbook: CashbookState; voteCashbook: VoteCashbookState }>(`/api/accounting-periods/${encodeURIComponent(key)}`, { token }),
 
+  openNextAccountingPeriod: (token: string) =>
+    request<{ period: AccountingPeriod }>("/api/accounting-periods/open-next", { method: "POST", token }),
+
   // Stage 2 — utilize station funds against a vote item (does not move the bank).
   addUtilization: (token: string, payload: UtilizationPayload) =>
     request<VoteCashbookState & { utilization: VoteUtilization }>("/api/vote-utilizations", {

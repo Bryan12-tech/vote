@@ -1290,11 +1290,12 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
 // ══════════════════════════════════════════════════════════════════════════
 // CASHBOOK TOP-UP (admin only)
 // ══════════════════════════════════════════════════════════════════════════
-function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
+function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextPeriod }: {
   cb: CashbookState; user: SessionUser
   onTopUp: (p: CreditPayload) => Promise<CashbookEntry>
   onSetOpening: (amount: number) => Promise<void>
   onClosePeriod: () => Promise<string>
+  onOpenNextPeriod: () => Promise<string>
 }) {
   const [mode, setMode] = useState<"topup" | "opening">("topup")
   const [amount, setAmount] = useState("")
@@ -1304,6 +1305,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
   const [success, setSuccess] = useState("")
   const [err, setErr] = useState("")
   const [closing, setClosing] = useState(false)
+  const [opening, setOpening] = useState(false)
 
   const bal = currentBalance(cb)
 
@@ -1353,6 +1355,17 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
     }
   }
 
+  async function handleOpenNextPeriod() {
+    setErr(""); setOpening(true)
+    try {
+      setSuccess(await onOpenNextPeriod())
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : "Failed to open the next accounting period.")
+    } finally {
+      setOpening(false)
+    }
+  }
+
   async function handleClosePeriod() {
     if (!window.confirm(`Close accounting period ${cb.period?.key || "current month"}? New entries will be recorded in the next period.`)) return
     setErr(""); setClosing(true)
@@ -1381,9 +1394,14 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
             <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Open Accounting Period</div>
             <div className="font-mono font-semibold text-[#1a2744]">{cb.period?.key || "Current month"}</div>
           </div>
-          <button type="button" onClick={handleClosePeriod} disabled={closing} className="gov-btn-secondary">
-            {closing ? "Closing…" : "Close Month & Carry Forward"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={handleOpenNextPeriod} disabled={opening || closing} className="gov-btn-secondary">
+              {opening ? "Opening…" : "Open Next Period"}
+            </button>
+            <button type="button" onClick={handleClosePeriod} disabled={closing || opening} className="gov-btn-secondary">
+              {closing ? "Closing…" : "Close Month & Carry Forward"}
+            </button>
+          </div>
         </div>
 
         {/* Current balance */}
@@ -1726,6 +1744,12 @@ export default function App() {
     setCb(await api.setOpeningBalance(token!, amount))
   }
 
+  async function openNextPeriod(): Promise<string> {
+    const result = await api.openNextAccountingPeriod(token!)
+    setDataTick(t => t + 1)
+    return `${result.period.period_key} opened. Opening balance: ${CUR} ${fmtMoney(result.period.openingBankBalance)}.`
+  }
+
   async function closePeriod(): Promise<string> {
     const result = await api.closeAccountingPeriod(token!)
     setDataTick(t => t + 1)
@@ -1783,7 +1807,7 @@ export default function App() {
         {view === "votebook"  && <VotebookRecords voteCashbook={voteCashbook} stations={stations} voteItems={voteItems} />}
         {view === "allocate"  && user.role === "admin" && <AllocationForm stations={stations} onSave={addAllocation} />}
         {view === "topup"     && user.role === "admin" && (
-          <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} onClosePeriod={closePeriod} />
+          <TopUpForm cb={cb} user={user} onTopUp={addCredit} onSetOpening={setOpening} onClosePeriod={closePeriod} onOpenNextPeriod={openNextPeriod} />
         )}
         {view === "users"     && user.role === "admin" && (
           <UsersAdmin token={token!} user={user} />

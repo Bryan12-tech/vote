@@ -609,6 +609,62 @@ app.get("/api/accounting-periods", auth, async (req, res, next) => {
   } catch (e) { next(e) }
 })
 
+app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, async (req, res, next) => {
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(913557)")
+
+    const current = (await client.query(
+      "SELECT * FROM accounting_periods WHERE status = 'open' ORDER BY starts_on DESC LIMIT 1 FOR UPDATE",
+    )).rows[0]
+    if (current) {
+      throw new HttpError(409, `${current.period_key} is already open.`)
+    }
+
+    const latest = (await client.query(
+      "SELECT * FROM accounting_periods ORDER BY starts_on DESC LIMIT 1 FOR UPDATE",
+    )).rows[0]
+    if (!latest) {
+      throw new HttpError(409, "There is no accounting period to carry forward.")
+    }
+
+    const balance = Number((await client.query(
+      `SELECT opening_bank_balance
+         + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries WHERE period_id = $1), 0) AS balance
+       FROM accounting_periods WHERE id = $1`,
+      [latest.id],
+    )).rows[0].balance)
+    const period = (await client.query(
+      `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
+       VALUES (to_char($1::date + interval '1 day', 'YYYY-MM'), $1::date + interval '1 day',
+               ($1::date + interval '2 months - 1 day')::date, 'open', $2)
+       ON CONFLICT (period_key) DO NOTHING
+       RETURNING *`,
+      [latest.starts_on, balance.toFixed(2)],
+    )).rows[0]
+    if (!period) {
+      throw new HttpError(409, "The next accounting period already exists. Check the period history before opening another period.")
+    }
+    await client.query("COMMIT")
+    res.status(201).json({
+      period: {
+        key: period.period_key,
+        startsOn: period.starts_on,
+        endsOn: period.ends_on,
+        status: period.status,
+        openingBankBalance: Number(period.opening_bank_balance),
+        bankMovement: 0,
+      },
+    })
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {})
+    next(e)
+  } finally {
+    client.release()
+  }
+})
+
 app.get("/api/accounting-periods/:key", auth, async (req, res, next) => {
   try {
     const period = await getPeriodByKey(req.params.key)
