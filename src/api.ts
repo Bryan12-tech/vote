@@ -125,6 +125,8 @@ export interface AccountingPeriod {
   status: "open" | "closed"
   openingBankBalance: number
   bankMovement: number
+  createdAt?: string | null
+  closedAt?: string | null
 }
 
 /** Stage 2 — earmark station funds against a vote item (no bank movement). */
@@ -244,11 +246,10 @@ export const api = {
   accountingPeriod: (token: string, key: string) =>
     request<{ cashbook: CashbookState; voteCashbook: VoteCashbookState }>(`/api/accounting-periods/${encodeURIComponent(key)}`, { token }),
 
-  openNextAccountingPeriod: (token: string, periodKey: string) =>
+  openNextAccountingPeriod: (token: string) =>
     request<{ period: AccountingPeriod }>("/api/accounting-periods/open-next", {
       method: "POST",
       token,
-      body: JSON.stringify({ periodKey }),
     }),
 
   // Stage 2 — utilize station funds against a vote item (does not move the bank).
@@ -288,11 +289,10 @@ export const api = {
       body: JSON.stringify({ amount }),
     }),
 
-  closeAccountingPeriod: (token: string, closeDate: string) =>
-    request<{ closed: { key: string; closeDate: string; bankBalance: number; carriedAllocations: number; carriedUtilizations: number }; current: { key: string; startsOn: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
+  closeAccountingPeriod: (token: string) =>
+    request<{ closed: { key: string; closeDate: string; closedAt: string; bankBalance: number; carriedAllocations: number; carriedUtilizations: number }; current: { key: string; startsOn: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
       method: "POST",
       token,
-      body: JSON.stringify({ closeDate }),
     }),
 
   // ── System users (admin · Central Finance only) ─────────────────────────

@@ -27,7 +27,10 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
 }
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+}
+function fmtDateTime(iso: string) {
+  return `${fmtDate(iso)} ${fmtTime(iso)}`
 }
 function fmtMoney(n: number, sign = false) {
   const s = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -1294,8 +1297,8 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   cb: CashbookState; user: SessionUser
   onTopUp: (p: CreditPayload) => Promise<CashbookEntry>
   onSetOpening: (amount: number) => Promise<void>
-  onClosePeriod: (closeDate: string) => Promise<string>
-  onOpenNextPeriod: (periodKey: string) => Promise<string>
+  onClosePeriod: () => Promise<{ message: string; closedAt: string }>
+  onOpenNextPeriod: () => Promise<{ message: string; openedAt: string }>
 }) {
   const [mode, setMode] = useState<"topup" | "opening">("topup")
   const [amount, setAmount] = useState("")
@@ -1305,25 +1308,17 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   const [success, setSuccess] = useState("")
   const [err, setErr] = useState("")
   const [closing, setClosing] = useState(false)
-  const [closeDate, setCloseDate] = useState(() => {
-    const current = new Date()
-    return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`
-  })
   const [opening, setOpening] = useState(false)
-  const [periodToOpen, setPeriodToOpen] = useState(() => {
-    const current = new Date()
-    return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}`
-  })
+  const [liveTime, setLiveTime] = useState(() => new Date())
+  const [openedAt, setOpenedAt] = useState<string | null>(null)
+  const [closedAt, setClosedAt] = useState<string | null>(null)
+  useEffect(() => {
+    const timer = window.setInterval(() => setLiveTime(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const bal = currentBalance(cb)
 
-  const periodDateRange = (() => {
-    if (!/^\d{4}-\d{2}$/.test(periodToOpen)) return ""
-    const [year, month] = periodToOpen.split("-").map(Number)
-    const start = new Date(year, month - 1, 1)
-    const end = new Date(year, month, 0)
-    return `${start.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })} – ${end.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}`
-  })()
   // Hard guard: the shared cashbook balance and credits may only be managed by
   // the administrator signed in at Central Finance. Stations make payments only.
   if (user.role !== "admin" || user.station !== "Central Finance") {
@@ -1373,7 +1368,10 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   async function handleOpenNextPeriod() {
     setErr(""); setOpening(true)
     try {
-      setSuccess(await onOpenNextPeriod(periodToOpen))
+      const result = await onOpenNextPeriod()
+      setSuccess(result.message)
+      setOpenedAt(result.openedAt)
+      setClosedAt(null)
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Failed to open the next accounting period.")
     } finally {
@@ -1382,10 +1380,13 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   }
 
   async function handleClosePeriod() {
-    if (!window.confirm(`Close accounting period ${cb.period?.key || "current month"} as of ${closeDate}? Entries after this date will move to the next period.`)) return
+    if (!window.confirm(`Close accounting period ${cb.period?.key || "current period"} now? The server will lock today's date and time.`)) return
     setErr(""); setClosing(true)
     try {
-      setSuccess(await onClosePeriod(closeDate))
+      const result = await onClosePeriod()
+      setSuccess(result.message)
+      setClosedAt(result.closedAt)
+      setOpenedAt(null)
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Failed to close the accounting period.")
     } finally {
@@ -1408,20 +1409,14 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
           <div>
             <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Open Accounting Period</div>
             <div className="font-mono font-semibold text-[#1a2744]">{cb.period?.key || "Current month"}</div>
+            <div className="font-mono text-[10px] text-[#4b5d84] mt-1">Live: {fmtDateTime(liveTime.toISOString())}</div>
+            {openedAt && <div className="font-mono text-[10px] text-emerald-700 mt-1">Opened/locked: {fmtDateTime(openedAt)}</div>}
+            {closedAt && <div className="font-mono text-[10px] text-red-700 mt-1">Closed/locked: {fmtDateTime(closedAt)}</div>}
           </div>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs text-[#4b5d84]">
-              <span className="block font-mono text-[9px] uppercase tracking-widest mb-1">New accounting period (month)</span>
-              <input type="month" value={periodToOpen} onChange={e => setPeriodToOpen(e.target.value)} className="gov-input" />
-              <span className="block font-mono text-[9px] text-[#8a96af] mt-1">{periodDateRange || "Select a month"}</span>
-            </label>
             <button type="button" onClick={handleOpenNextPeriod} disabled={opening || closing} className="gov-btn-secondary">
               {opening ? "Opening…" : "Open Period"}
             </button>
-            <label className="text-xs text-[#4b5d84]">
-              <span className="block font-mono text-[9px] uppercase tracking-widest mb-1">Close as of</span>
-              <input type="date" value={closeDate} onChange={e => setCloseDate(e.target.value)} className="gov-input" />
-            </label>
             <button type="button" onClick={handleClosePeriod} disabled={closing || opening} className="gov-btn-secondary">
               {closing ? "Closing…" : "Close & Carry Forward"}
             </button>
@@ -1768,16 +1763,22 @@ export default function App() {
     setCb(await api.setOpeningBalance(token!, amount))
   }
 
-  async function openNextPeriod(periodKey: string): Promise<string> {
-    const result = await api.openNextAccountingPeriod(token!, periodKey)
+  async function openNextPeriod(): Promise<{ message: string; openedAt: string }> {
+    const result = await api.openNextAccountingPeriod(token!)
     setDataTick(t => t + 1)
-    return `${result.period.key} opened. Opening balance: ${CUR} ${fmtMoney(result.period.openingBankBalance)}.`
+    return {
+      message: `${result.period.key} opened. Opening balance: ${CUR} ${fmtMoney(result.period.openingBankBalance)}.`,
+      openedAt: result.period.createdAt || new Date().toISOString(),
+    }
   }
 
-  async function closePeriod(closeDate: string): Promise<string> {
-    const result = await api.closeAccountingPeriod(token!, closeDate)
+  async function closePeriod(): Promise<{ message: string; closedAt: string }> {
+    const result = await api.closeAccountingPeriod(token!)
     setDataTick(t => t + 1)
-    return `${result.closed.key} closed as of ${result.closed.closeDate}. ${result.closed.carriedAllocations} station fund(s) and ${result.closed.carriedUtilizations} un-released vote(s) carried into ${result.current.key}, starting ${result.current.startsOn} (opening ${CUR} ${fmtMoney(result.current.openingBankBalance)}).`
+    return {
+      message: `${result.closed.key} closed as of ${result.closed.closeDate}. ${result.closed.carriedAllocations} station fund(s) and ${result.closed.carriedUtilizations} un-released vote(s) carried into ${result.current.key}, starting ${result.current.startsOn} (opening ${CUR} ${fmtMoney(result.current.openingBankBalance)}).`,
+      closedAt: result.closed.closedAt,
+    }
   }
 
   if (!user) return <LoginScreen onLogin={handleLogin} />

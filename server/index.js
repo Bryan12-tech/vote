@@ -615,11 +615,6 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
 
-    const requestedKey = asString(req.body?.periodKey).trim()
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(requestedKey)) {
-      throw new HttpError(400, "Enter an accounting month in YYYY-MM format.")
-    }
-
     const current = (await client.query(
       "SELECT * FROM accounting_periods WHERE status = 'open' ORDER BY starts_on DESC LIMIT 1 FOR UPDATE",
     )).rows[0]
@@ -633,20 +628,11 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     if (!latest) {
       throw new HttpError(409, "There is no accounting period to carry forward.")
     }
-    if (requestedKey <= latest.period_key) {
-      throw new HttpError(400, `The new period must be after the latest period, ${latest.period_key}.`)
-    }
-    const requestedStart = `${requestedKey}-01`
-    if (requestedStart <= latest.ends_on) {
-      throw new HttpError(400, `${requestedKey} overlaps the existing period ending ${latest.ends_on}.`)
-    }
-    const existing = (await client.query(
-      "SELECT period_key FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
-      [requestedKey],
-    )).rows[0]
-    if (existing) {
-      throw new HttpError(409, `${requestedKey} already exists in the period history and cannot be opened again.`)
-    }
+    const nextStart = (await client.query(
+      "SELECT to_char(latest.ends_on + 1, 'YYYY-MM-DD') AS date FROM accounting_periods latest WHERE latest.id = $1",
+      [latest.id],
+    )).rows[0].date
+    const nextKey = nextStart
 
     const balance = Number((await client.query(
       `SELECT opening_bank_balance
@@ -658,7 +644,7 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
       `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
        VALUES ($1, $2::date, ($2::date + interval '1 month - 1 day')::date, 'open', $3)
        RETURNING *`,
-      [requestedKey, `${requestedKey}-01`, balance.toFixed(2)],
+      [nextKey, nextStart, balance.toFixed(2)],
     )).rows[0]
     await client.query("COMMIT")
     res.status(201).json({
@@ -669,6 +655,8 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
         status: period.status,
         openingBankBalance: Number(period.opening_bank_balance),
         bankMovement: 0,
+        createdAt: period.created_at ? new Date(period.created_at).toISOString() : null,
+        closedAt: period.closed_at ? new Date(period.closed_at).toISOString() : null,
       },
     })
   } catch (e) {
@@ -738,16 +726,11 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
     const period = await getCurrentPeriod(client)
-    const closeDate = asString(req.body?.closeDate).trim()
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(closeDate)) {
-      throw new HttpError(400, "Enter a valid close date in YYYY-MM-DD format.")
-    }
-    const closeDateCheck = await client.query(
-      "SELECT $1::date BETWEEN starts_on AND ends_on AS valid FROM accounting_periods WHERE id = $2",
-      [closeDate, period.id],
-    )
-    if (!closeDateCheck.rows[0]?.valid) {
-      throw new HttpError(400, `The close date must be between ${period.starts_label} and ${period.ends_label}.`)
+    // The administrator does not choose a date: PostgreSQL's current date is
+    // the authoritative close date at the moment the transaction locks the period.
+    const closeDate = (await client.query("SELECT to_char(current_date, 'YYYY-MM-DD') AS date")).rows[0].date
+    if (closeDate < period.starts_label || closeDate > period.ends_label) {
+      throw new HttpError(400, `Today (${closeDate}) is outside the current period (${period.starts_label} to ${period.ends_label}).`)
     }
     const bank = Number((await client.query(
       `SELECT opening_bank_balance
@@ -868,13 +851,13 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
       )
       carriedUtilizations++
     }
-    await client.query(
-      "UPDATE accounting_periods SET status = 'closed', ends_on = $2::date, closed_at = now() WHERE id = $1",
+    const closed = (await client.query(
+      "UPDATE accounting_periods SET status = 'closed', ends_on = $2::date, closed_at = now() WHERE id = $1 RETURNING closed_at",
       [period.id, closeDate],
-    )
+    )).rows[0]
     await client.query("COMMIT")
     res.json({
-      closed: { key: period.period_key, closeDate, bankBalance: bank, carriedAllocations, carriedUtilizations },
+      closed: { key: period.period_key, closeDate, closedAt: new Date(closed.closed_at).toISOString(), bankBalance: bank, carriedAllocations, carriedUtilizations },
       current: { key: next.period_key, startsOn: next.starts_on, openingBankBalance: Number(next.opening_bank_balance) },
     })
   } catch (e) {
