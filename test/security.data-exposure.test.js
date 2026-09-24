@@ -8,12 +8,14 @@
 import { after, before, describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
+  allocateToStation,
   bootstrap,
   createUser,
   DEMO_ADMIN,
   DEMO_OFFICER,
   resetCashbook,
   uniqueUsername,
+  utilizeFunds,
 } from "./lib/harness.js"
 
 // Fingerprints of files that must never be reachable over HTTP.
@@ -306,13 +308,11 @@ describe("route parameters and injected payloads", () => {
 describe("error hygiene", () => {
   it("returns validation errors without stacks, SQL fragments or paths", async () => {
     const res = await api.post(
-      "/api/cashbook/payments",
+      "/api/vote-utilizations",
       {
         voteCode: "nope",
         amount: "-1",
         station: "Nope",
-        payee: "",
-        purpose: "",
       },
       { token: officerToken },
     )
@@ -338,14 +338,15 @@ describe("error hygiene", () => {
 
   it("stores free text verbatim and returns it as JSON, leaving escaping to the renderer", async () => {
     const payload = "<script>alert('xss')</script>"
+    await allocateToStation(api, adminToken, { amount: "10.00" })
+    const utilization = await utilizeFunds(api, officerToken, { amount: "10.00" })
     const res = await api.post(
-      "/api/cashbook/payments",
+      "/api/vote-releases",
       {
-        voteCode: "22002101",
+        utilizationId: utilization.id,
         amount: "1.00",
         payee: payload,
         purpose: payload,
-        station: "Mkoani",
       },
       { token: officerToken },
     )

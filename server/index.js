@@ -95,6 +95,7 @@ function rowToEntry(r) {
     purpose: r.purpose,
     receiptNo: r.receipt_no,
     cashbookRef: r.cashbook_ref,
+    utilizationRef: r.utilization_ref || "",
     debit: Number(r.debit),
     credit: Number(r.credit),
     balance: Number(r.balance),
@@ -124,7 +125,7 @@ async function getCashbookState(period = null) {
   }
 }
 
-function rowToAllocation(r) {
+function rowToAllocation(r, used) {
   return {
     id: r.id,
     reference: r.allocation_ref,
@@ -132,8 +133,8 @@ function rowToAllocation(r) {
     station: r.station,
     subVote: r.sub_vote,
     amount: Number(r.amount),
-    used: Number(r.used),
-    remaining: Number(r.amount) - Number(r.used),
+    used,
+    remaining: Number(r.amount) - used,
     allocationReference: r.reference,
     description: r.description,
     officer: r.officer,
@@ -141,31 +142,78 @@ function rowToAllocation(r) {
   }
 }
 
-async function getVoteCashbookState(period = null) {
-  period ||= await getCurrentPeriod()
-  const allocations = await pool.query(`
-    SELECT a.*, COALESCE(SUM(e.amount), 0) AS used
-    FROM vote_allocations a
-    LEFT JOIN vote_expenditures e ON e.allocation_id = a.id
-    WHERE a.period_id = $1
-    GROUP BY a.id
-    ORDER BY a.id ASC
+function rowToUtilization(r) {
+  const released = Number(r.released)
+  return {
+    id: r.id,
+    reference: r.utilization_ref,
+    timestamp: r.created_at.toISOString(),
+    station: r.station,
+    subVote: r.sub_vote,
+    voteCode: r.vote_code,
+    voteDescription: r.vote_description,
+    amount: Number(r.amount),
+    released,
+    remaining: Number(r.amount) - released,
+    description: r.description,
+    officer: r.officer,
+    officerName: r.officer_name,
+  }
+}
+
+async function getVoteCashbookState(period = null, client = pool) {
+  period ||= await getCurrentPeriod(client)
+  const allocations = await client.query(
+    "SELECT * FROM vote_allocations WHERE period_id = $1 ORDER BY id ASC",
+    [period.id],
+  )
+  // Stage 2: money a station holds, earmarked against a vote item.
+  const utilizations = await client.query(`
+    SELECT u.*, COALESCE((SELECT SUM(e.amount) FROM vote_expenditures e WHERE e.utilization_id = u.id), 0) AS released
+    FROM vote_utilizations u
+    WHERE u.period_id = $1
+    ORDER BY u.id ASC
   `, [period.id])
-  const expenditures = await pool.query(`
-    SELECT e.*, a.allocation_ref
+  // Stage 3: the actual payments, which are what debited Cash in Bank.
+  const expenditures = await client.query(`
+    SELECT e.*, COALESCE(u.utilization_ref, '') AS utilization_ref
     FROM vote_expenditures e
-    JOIN vote_allocations a ON a.id = e.allocation_id
+    LEFT JOIN vote_utilizations u ON u.id = e.utilization_id
     WHERE e.period_id = $1
     ORDER BY e.id ASC
   `, [period.id])
+
+  // A release draws on the station's pooled funds, oldest allocation first, so
+  // each allocation's "used" is the slice of the station's releases that falls
+  // inside its part of the pool.
+  const releasedByStation = new Map()
+  for (const e of expenditures.rows) {
+    releasedByStation.set(e.station, (releasedByStation.get(e.station) || 0) + Number(e.amount))
+  }
+  const poolStart = new Map()
+  const allocationRows = allocations.rows.map(a => {
+    const stationReleased = releasedByStation.get(a.station) || 0
+    const start = poolStart.get(a.station) || 0
+    const used = Math.max(0, Math.min(Number(a.amount), stationReleased - start))
+    poolStart.set(a.station, start + Number(a.amount))
+    return rowToAllocation(a, used)
+  })
+
+  const utilizationRows = utilizations.rows.map(rowToUtilization)
+  const allocated = allocationRows.reduce((s, a) => s + a.amount, 0)
+  const utilized = utilizationRows.reduce((s, u) => s + u.amount, 0)
+  const released = utilizationRows.reduce((s, u) => s + u.released, 0)
+
   return {
     period: { key: period.period_key, startsOn: period.starts_label, endsOn: period.ends_label },
-    allocations: allocations.rows.map(rowToAllocation),
+    allocations: allocationRows,
+    utilizations: utilizationRows,
     expenditures: expenditures.rows.map(r => ({
       id: r.expenditure_ref,
       timestamp: r.created_at.toISOString(),
-      allocationId: r.allocation_id,
-      allocationReference: r.allocation_ref,
+      allocationId: r.allocation_id === null ? null : Number(r.allocation_id),
+      utilizationId: r.utilization_id === null ? null : Number(r.utilization_id),
+      utilizationReference: r.utilization_ref,
       station: r.station,
       subVote: r.sub_vote,
       voteCode: r.vote_code,
@@ -179,44 +227,57 @@ async function getVoteCashbookState(period = null) {
       officer: r.officer,
       officerName: r.officer_name,
     })),
+    totals: {
+      allocated,
+      utilized,
+      unutilized: allocated - utilized,
+      released,
+      unreleased: utilized - released,
+    },
   }
 }
 
-// Inserts an entry with a serialized balance check. The advisory lock makes the
-// read-modify-write atomic even with several stations posting at the same time.
+// Computes the running Cash in Bank balance and inserts the ledger row. It must
+// run inside the caller's transaction — the advisory lock serialises the
+// read-modify-write even with several stations posting at the same time.
+async function insertEntryIn(client, f) {
+  const period = await getCurrentPeriod(client)
+  const opening = Number(
+    (await client.query("SELECT opening_bank_balance FROM accounting_periods WHERE id = $1", [period.id])).rows[0].opening_bank_balance,
+  )
+  const net = Number(
+    (await client.query("SELECT COALESCE(SUM(credit - debit), 0) AS net FROM cashbook_entries WHERE period_id = $1", [period.id])).rows[0].net,
+  )
+  const balance = opening + net + f.credit - f.debit
+  if (balance < 0) {
+    throw new HttpError(400, `Insufficient balance. Available: TSh ${money(opening + net)}`)
+  }
+  const entryRef = genRef(f.type === "payment" ? "CB" : "CR")
+  const r = await client.query(
+    `INSERT INTO cashbook_entries
+       (entry_ref, type, description, station, officer, officer_name,
+         vote_code, vote_description, vote_sub_vote, vote_item, vote_sub_item, period_id,
+        payee, purpose, receipt_no, cashbook_ref, utilization_ref, debit, credit, balance)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     RETURNING *`,
+    [
+      entryRef, f.type, f.description, f.station, f.officer, f.officerName,
+      f.voteCode, f.voteDescription, f.voteSubVote, f.voteItem, f.voteSubItem, period.id,
+      f.payee, f.purpose, f.receiptNo, f.cashbookRef, f.utilizationRef || "",
+      f.debit.toFixed(2), f.credit.toFixed(2), balance.toFixed(2),
+    ],
+  )
+  return rowToEntry(r.rows[0])
+}
+
 async function insertEntry(f) {
   const client = await pool.connect()
   try {
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
-    const period = await getCurrentPeriod(client)
-    const opening = Number(
-      (await client.query("SELECT opening_bank_balance FROM accounting_periods WHERE id = $1", [period.id])).rows[0].opening_bank_balance,
-    )
-    const net = Number(
-      (await client.query("SELECT COALESCE(SUM(credit - debit), 0) AS net FROM cashbook_entries WHERE period_id = $1", [period.id])).rows[0].net,
-    )
-    const balance = opening + net + f.credit - f.debit
-    if (balance < 0) {
-      throw new HttpError(400, `Insufficient balance. Available: TSh ${money(opening + net)}`)
-    }
-    const entryRef = genRef(f.type === "payment" ? "CB" : "CR")
-    const r = await client.query(
-      `INSERT INTO cashbook_entries
-         (entry_ref, type, description, station, officer, officer_name,
-           vote_code, vote_description, vote_sub_vote, vote_item, vote_sub_item, period_id,
-          payee, purpose, receipt_no, cashbook_ref, debit, credit, balance)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-       RETURNING *`,
-      [
-        entryRef, f.type, f.description, f.station, f.officer, f.officerName,
-        f.voteCode, f.voteDescription, f.voteSubVote, f.voteItem, f.voteSubItem, period.id,
-        f.payee, f.purpose, f.receiptNo, f.cashbookRef,
-        f.debit.toFixed(2), f.credit.toFixed(2), balance.toFixed(2),
-      ],
-    )
+    const entry = await insertEntryIn(client, f)
     await client.query("COMMIT")
-    return rowToEntry(r.rows[0])
+    return entry
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
     throw e
@@ -301,26 +362,31 @@ app.get("/api/cashbook", auth, async (req, res, next) => {
   }
 })
 
-app.post("/api/cashbook/payments", auth, async (req, res, next) => {
+// ── Stage 2: utilize station funds against a vote item ─────────────────────
+//
+// This is the "second last" step. It earmarks part of the money a station holds
+// against a vote item and does NOT touch Cash in Bank — nothing leaves the bank
+// until that vote is released.
+app.post("/api/vote-utilizations", auth, async (req, res, next) => {
   const client = await pool.connect()
   try {
-    const { amount, payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
-    const amt = asNumber(amount)
-    if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
-    const payeeName = asString(payee).trim()
-    if (!payeeName) throw new HttpError(400, "Payee name is required.")
-    const purposeText = asString(purpose).trim()
-    if (!purposeText) throw new HttpError(400, "Purpose / description is required.")
-    const allocationId = Number(req.body?.allocationId)
-    if (!Number.isInteger(allocationId) || allocationId <= 0) throw new HttpError(400, "Please select a vote allocation.")
-    const voteCode = asString(req.body?.voteCode).trim()
+    const station = asString(req.body?.station).trim()
+    // Vote codes are identifiers, not free text: do not normalise surrounding
+    // whitespace, otherwise a value absent from the master list can be accepted.
+    const voteCode = asString(req.body?.voteCode)
+    const amount = asNumber(req.body?.amount)
+    const descriptionText = asString(req.body?.description).trim()
+    if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
+    if (!station) throw new HttpError(400, "Please select a station.")
+    if (!voteCode) throw new HttpError(400, "Please select a vote item.")
+
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
-    const allocation = (await client.query(
-      "SELECT a.* FROM vote_allocations a JOIN accounting_periods p ON p.id = a.period_id WHERE a.id = $1 AND p.status = 'open' FOR UPDATE",
-      [allocationId],
-    )).rows[0]
-    if (!allocation) throw new HttpError(400, "Please select a valid vote allocation.")
+    const period = await getCurrentPeriod(client)
+    const stationRow = (await client.query("SELECT name, sub_vote FROM stations WHERE name = $1", [station])).rows[0]
+    if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
+
+    // Station-specific vote items (vote_item_stations) still apply per station.
     const vote = (await client.query(`
       SELECT v.* FROM vote_items v
       WHERE v.code = $1
@@ -328,45 +394,142 @@ app.post("/api/cashbook/payments", auth, async (req, res, next) => {
           NOT EXISTS (SELECT 1 FROM vote_item_stations WHERE vote_code = v.code)
           OR EXISTS (SELECT 1 FROM vote_item_stations WHERE vote_code = v.code AND station = $2)
         )
-    `, [voteCode, allocation.station])).rows[0]
+    `, [voteCode, station])).rows[0]
     if (!vote) throw new HttpError(400, "This vote item is not available for the selected station.")
-    const used = Number((await client.query(
-      "SELECT COALESCE(SUM(amount), 0) AS used FROM vote_expenditures WHERE allocation_id = $1",
-      [allocationId],
-    )).rows[0].used)
-    const remaining = Number(allocation.amount) - used
-    if (amt > remaining) throw new HttpError(400, `Insufficient vote allocation. Available: TSh ${money(remaining)}`)
+
+    const allocated = Number((await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM vote_allocations WHERE period_id = $1 AND station = $2",
+      [period.id, station],
+    )).rows[0].total)
+    const utilized = Number((await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM vote_utilizations WHERE period_id = $1 AND station = $2",
+      [period.id, station],
+    )).rows[0].total)
+    if (allocated <= 0) {
+      throw new HttpError(400, `${station} has no allocated funds in ${period.period_key}. The administrator must allocate funds to it first.`)
+    }
+    const available = allocated - utilized
+    if (amount > available) {
+      throw new HttpError(400, `Insufficient station funds. ${station} has TSh ${money(available)} still unutilized.`)
+    }
+
+    const utilizationRef = genRef("VU")
+    const r = await client.query(
+      `INSERT INTO vote_utilizations
+         (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
+          amount, description, officer, officer_name)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        RETURNING *`,
+      [utilizationRef, period.id, station, stationRow.sub_vote, vote.code, vote.description,
+        amount.toFixed(2), descriptionText, req.user.username, req.user.name],
+    )
+    await client.query("COMMIT")
+    res.status(201).json({
+      ...(await getVoteCashbookState(null, client)),
+      utilization: rowToUtilization({ ...r.rows[0], released: 0 }),
+    })
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {})
+    next(e)
+  } finally {
+    client.release()
+  }
+})
+
+// ── Stage 3: release / spend a utilized vote ──────────────────────────────
+//
+// The last step, and the only votebook action that debits Cash in Bank: the
+// voucher is paid, so the money actually leaves the bank. A utilization can be
+// released in several payments until its utilized amount is exhausted.
+app.post("/api/vote-releases", auth, async (req, res, next) => {
+  const client = await pool.connect()
+  try {
+    const utilizationId = Number(req.body?.utilizationId)
+    const amt = asNumber(req.body?.amount)
+    const { payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
+    if (!Number.isInteger(utilizationId) || utilizationId <= 0) throw new HttpError(400, "Please select a utilized vote to release.")
+    if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
+    const payeeName = asString(payee).trim()
+    if (!payeeName) throw new HttpError(400, "Payee name is required.")
+    const purposeText = asString(purpose).trim()
+    if (!purposeText) throw new HttpError(400, "Purpose / description is required.")
+
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(913557)")
+    await getCurrentPeriod(client) // releases are only allowed in the open period
+    const utilization = (await client.query(`
+      SELECT u.* FROM vote_utilizations u
+      JOIN accounting_periods p ON p.id = u.period_id
+      WHERE u.id = $1 AND p.status = 'open'
+      FOR UPDATE OF u
+    `, [utilizationId])).rows[0]
+    if (!utilization) throw new HttpError(400, "Please select a valid vote utilization from the open period.")
+
+    const alreadyReleased = Number((await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM vote_expenditures WHERE utilization_id = $1",
+      [utilization.id],
+    )).rows[0].total)
+    const remaining = Number(utilization.amount) - alreadyReleased
+    if (amt > remaining) {
+      throw new HttpError(400, `Insufficient utilized funds. Available to release: TSh ${money(remaining)}`)
+    }
+
+    const vote = (await client.query("SELECT item, sub_item FROM vote_items WHERE code = $1", [utilization.vote_code])).rows[0]
 
     const expenditureRef = genRef("VE")
     const r = await client.query(
       `INSERT INTO vote_expenditures
-        (expenditure_ref, allocation_id, station, sub_vote, vote_code, vote_description, period_id,
-        payee, purpose, voucher_no, receipt_no, cashbook_ref, amount, officer, officer_name)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-       RETURNING *`,
-      [expenditureRef, allocation.id, allocation.station, allocation.sub_vote, vote.code,
-        vote.description, allocation.period_id, payeeName, purposeText, asString(voucherNo).trim(), asString(receiptNo).trim(),
-        asString(cashbookRef).trim(), amt.toFixed(2), req.user.username, req.user.name],
+         (expenditure_ref, utilization_id, station, sub_vote, vote_code, vote_description, period_id,
+          payee, purpose, voucher_no, receipt_no, cashbook_ref, amount, officer, officer_name)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        RETURNING *`,
+      [expenditureRef, utilization.id, utilization.station, utilization.sub_vote, utilization.vote_code,
+        utilization.vote_description, utilization.period_id, payeeName, purposeText, asString(voucherNo).trim(),
+        asString(receiptNo).trim(), asString(cashbookRef).trim(), amt.toFixed(2), req.user.username, req.user.name],
     )
+    const entry = await insertEntryIn(client, {
+      type: "payment",
+      description: utilization.vote_description,
+      station: utilization.station,
+      officer: req.user.username,
+      officerName: req.user.name,
+      voteCode: utilization.vote_code,
+      voteDescription: utilization.vote_description,
+      voteSubVote: utilization.sub_vote,
+      voteItem: vote?.item || "",
+      voteSubItem: vote?.sub_item || "",
+      payee: payeeName,
+      purpose: purposeText,
+      receiptNo: asString(receiptNo).trim(),
+      cashbookRef: asString(cashbookRef).trim(),
+      utilizationRef: utilization.utilization_ref,
+      debit: amt,
+      credit: 0,
+    })
     await client.query("COMMIT")
-    res.status(201).json({ ...(await getVoteCashbookState()), expenditure: {
-      id: r.rows[0].expenditure_ref,
-      timestamp: r.rows[0].created_at.toISOString(),
-      allocationId: r.rows[0].allocation_id,
-      allocationReference: allocation.allocation_ref,
-      station: r.rows[0].station,
-      subVote: r.rows[0].sub_vote,
-      voteCode: r.rows[0].vote_code,
-      voteDescription: r.rows[0].vote_description,
-      payee: r.rows[0].payee,
-      purpose: r.rows[0].purpose,
-      voucherNo: r.rows[0].voucher_no,
-      receiptNo: r.rows[0].receipt_no,
-      cashbookRef: r.rows[0].cashbook_ref,
-      amount: Number(r.rows[0].amount),
-      officer: r.rows[0].officer,
-      officerName: r.rows[0].officer_name,
-    } })
+    res.status(201).json({
+      ...(await getVoteCashbookState(null, client)),
+      entry,
+      expenditure: {
+        id: r.rows[0].expenditure_ref,
+        timestamp: r.rows[0].created_at.toISOString(),
+        allocationId: null,
+        utilizationId: utilization.id,
+        utilizationReference: utilization.utilization_ref,
+        station: r.rows[0].station,
+        subVote: r.rows[0].sub_vote,
+        voteCode: r.rows[0].vote_code,
+        voteDescription: r.rows[0].vote_description,
+        payee: r.rows[0].payee,
+        purpose: r.rows[0].purpose,
+        voucherNo: r.rows[0].voucher_no,
+        receiptNo: r.rows[0].receipt_no,
+        cashbookRef: r.rows[0].cashbook_ref,
+        amount: Number(r.rows[0].amount),
+        officer: r.rows[0].officer,
+        officerName: r.rows[0].officer_name,
+      },
+    })
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
     next(e)
@@ -455,13 +618,16 @@ app.post("/api/vote-allocations", auth, requireCentralFinanceAdmin, async (req, 
     const reference = asString(req.body?.reference).trim()
     if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Enter a valid allocation amount.")
     if (!station) throw new HttpError(400, "Please select a station.")
-    if (!description) throw new HttpError(400, "Allocation description is required.")
+    if (!description) throw new HttpError(400, "Allocation purpose / description is required.")
 
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
     const stationRow = (await client.query("SELECT sub_vote FROM stations WHERE name = $1", [station])).rows[0]
     if (!stationRow) throw new HttpError(400, "Please select a valid police station.")
     const period = await getCurrentPeriod(client)
+    // Allocation reserves general bank funds for a station. Vote items are
+    // deliberately absent from this stage; they are selected during utilization.
+    // The ceiling is the current bank balance less everything already allocated.
     const bank = await client.query(`
       SELECT
         (SELECT opening_bank_balance FROM accounting_periods WHERE id = $1)
@@ -476,11 +642,11 @@ app.post("/api/vote-allocations", auth, requireCentralFinanceAdmin, async (req, 
       `INSERT INTO vote_allocations
         (allocation_ref, station, sub_vote, amount, reference, description, officer, officer_name, period_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       RETURNING *, 0::numeric AS used`,
+       RETURNING *`,
       [allocationRef, station, stationRow.sub_vote, amount.toFixed(2), reference, description, req.user.username, req.user.name, period.id],
     )
     await client.query("COMMIT")
-    res.status(201).json({ allocation: rowToAllocation(r.rows[0]), ...(await getVoteCashbookState()) })
+    res.status(201).json({ allocation: rowToAllocation(r.rows[0], 0), ...(await getVoteCashbookState(null, client)) })
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
     next(e)
@@ -507,27 +673,57 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
       [period.starts_on, bank.toFixed(2)],
     )).rows[0]
     const carry = await client.query(
-      `SELECT a.*, a.amount - COALESCE(SUM(e.amount), 0) AS remaining
+      `SELECT a.station, MAX(a.sub_vote) AS sub_vote, SUM(a.amount) AS allocated,
+              COALESCE((SELECT SUM(e.amount) FROM vote_expenditures e
+                         WHERE e.period_id = $1 AND e.station = a.station), 0) AS released
        FROM vote_allocations a
-       LEFT JOIN vote_expenditures e ON e.allocation_id = a.id
        WHERE a.period_id = $1
-       GROUP BY a.id
-       HAVING a.amount - COALESCE(SUM(e.amount), 0) > 0`,
+       GROUP BY a.station`,
       [period.id],
     )
-    for (const allocation of carry.rows) {
+    let carriedAllocations = 0
+    for (const row of carry.rows) {
+      const remaining = Number(row.allocated) - Number(row.released)
+      if (remaining <= 0) continue
       await client.query(
         `INSERT INTO vote_allocations
           (allocation_ref, station, sub_vote, amount, reference, description, officer, officer_name, period_id)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [genRef("VA"), allocation.station, allocation.sub_vote, Number(allocation.remaining).toFixed(2),
-          `Carry-forward from ${period.period_key}`, `Unused balance carried forward from ${period.period_key}`,
+        [genRef("VA"), row.station, row.sub_vote, remaining.toFixed(2),
+          `Carry-forward from ${period.period_key}`, `Unspent station funds carried forward from ${period.period_key}`,
           req.user.username, req.user.name, next.id],
       )
+      carriedAllocations++
+    }
+    // Un-released vote earmarks survive too, so a station does not lose the votes
+    // it already utilized to vote items when the month rolls over.
+    const openUtilizations = await client.query(
+      `SELECT u.*, u.amount - COALESCE((SELECT SUM(e.amount) FROM vote_expenditures e WHERE e.utilization_id = u.id), 0) AS remaining
+       FROM vote_utilizations u
+       WHERE u.period_id = $1`,
+      [period.id],
+    )
+    let carriedUtilizations = 0
+    for (const u of openUtilizations.rows) {
+      const remaining = Number(u.remaining)
+      if (remaining <= 0) continue
+      await client.query(
+        `INSERT INTO vote_utilizations
+          (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
+           amount, description, officer, officer_name)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [genRef("VU"), next.id, u.station, u.sub_vote, u.vote_code, u.vote_description,
+          remaining.toFixed(2), `Un-released balance carried forward from ${period.period_key}`,
+          req.user.username, req.user.name],
+      )
+      carriedUtilizations++
     }
     await client.query("UPDATE accounting_periods SET status = 'closed', closed_at = now() WHERE id = $1", [period.id])
     await client.query("COMMIT")
-    res.json({ closed: { key: period.period_key, bankBalance: bank, carriedAllocations: carry.rowCount }, current: { key: next.period_key, openingBankBalance: Number(next.opening_bank_balance) } })
+    res.json({
+      closed: { key: period.period_key, bankBalance: bank, carriedAllocations, carriedUtilizations },
+      current: { key: next.period_key, openingBankBalance: Number(next.opening_bank_balance) },
+    })
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
     next(e)

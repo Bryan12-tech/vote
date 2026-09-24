@@ -12,6 +12,8 @@ import {
   createUser,
   DEMO_ADMIN,
   DEMO_OFFICER,
+  fundStation,
+  releaseVote,
   resetCashbook,
   signToken,
   uniqueUsername,
@@ -29,6 +31,8 @@ const ADMIN_ONLY = [
   ["DELETE", "/api/users/officer1"],
   ["POST", "/api/cashbook/credits"],
   ["PUT", "/api/cashbook/opening-balance"],
+  ["POST", "/api/vote-allocations"],
+  ["POST", "/api/accounting-periods/close"],
 ]
 
 before(async () => {
@@ -81,22 +85,19 @@ describe("officer sessions", () => {
     assert.ok(Array.isArray(bootstrapRes.body.voteItems))
   })
 
-  it("can post a payment batched to any station (the documented shared-cashbook model)", async () => {
+  it("can utilize and release a vote for any station (the documented shared model)", async () => {
     await resetCashbook(ctx.db, 5000)
-    const res = await api.post(
-      "/api/cashbook/payments",
-      {
-        voteCode: "22002101",
-        amount: "10.00",
-        payee: "Test Payee",
-        purpose: "Unit test",
-        station: "Mkoani",
-      },
-      { token: officerToken },
-    )
-    assert.equal(res.status, 201)
-    assert.equal(res.body.entry.station, "Mkoani")
-    assert.equal(res.body.entry.officer, DEMO_OFFICER.username)
+    const utilization = await fundStation(api, adminToken, officerToken)
+    assert.equal(utilization.station, "Mkoani")
+    assert.equal(utilization.officer, DEMO_OFFICER.username)
+    const res = await releaseVote(api, officerToken, {
+      utilizationId: utilization.id,
+      amount: "100.00",
+    })
+    assert.equal(res.expenditure.station, "Mkoani")
+    assert.equal(res.entry.station, "Mkoani")
+    assert.equal(res.entry.officer, DEMO_OFFICER.username)
+    assert.equal(res.entry.debit, 100)
   })
 })
 

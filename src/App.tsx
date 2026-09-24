@@ -11,8 +11,10 @@ import {
   type CashbookState,
   type VoteAllocation,
   type VoteExpenditure,
+  type VoteUtilization,
   type VoteCashbookState,
-  type PaymentPayload,
+  type UtilizationPayload,
+  type ReleasePayload,
   type CreditPayload,
   type AllocationPayload,
   type AccountingPeriod,
@@ -179,15 +181,18 @@ function LoginScreen({ onLogin }: { onLogin: (s: { token: string; user: SessionU
 function Sidebar({ user, view, onView, onLogout, balance }: {
   user: SessionUser; view: string; onView: (v: string) => void; onLogout: () => void; balance: number
 }) {
+  // The votebook is a three-stage flow: allocate → utilize → release. Only the
+  // last stage (release) moves the shared Cash in Bank.
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: "⊞" },
-    { id: "new",       label: "New Votebook Entry", icon: "✦" },
-    { id: "cashbook",  label: "Cashbook Ledger", icon: "⊟" },
-    { id: "votebook",  label: "Vote Cashbook", icon: "≡" },
+    { id: "utilize",   label: "Utilize to Vote", icon: "✦" },
+    { id: "release",   label: "Release / Pay Vote", icon: "⇧" },
+    { id: "votebook",  label: "Votebook Cash", icon: "≡" },
+    { id: "cashbook",  label: "Cash in Bank", icon: "⊟" },
     { id: "history",   label: "Period History", icon: "◷" },
     ...(user.role === "admin" ? [
-      { id: "topup",   label: "Cashbook Top-Up", icon: "⊕" },
-      { id: "allocate", label: "Allocate to Vote", icon: "⇢" },
+      { id: "topup",   label: "Cash in Bank Top-Up", icon: "⊕" },
+      { id: "allocate", label: "Allocate to Station", icon: "⇢" },
       { id: "users",   label: "System Users", icon: "▣" },
       { id: "summary", label: "Summary Report", icon: "◈" },
     ] : []),
@@ -221,7 +226,7 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
         style={{ background: low ? "#fef3c7" : "#d1fae5", border: `1px solid ${low ? "#fde68a" : "#a7f3d0"}` }}>
         <div className="font-mono text-[9px] uppercase tracking-widest mb-0.5"
           style={{ color: low ? "#92400e" : "#065f46" }}>
-          Cashbook Balance
+          Cash in Bank Balance
         </div>
         <div className="font-mono font-semibold text-sm"
           style={{ color: low ? "#b45309" : "#047857" }}>
@@ -273,11 +278,12 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
   const stationTotal = stationEntries.reduce((s, e) => s + e.debit, 0)
   const recentEntries = cb.entries.slice(-5).reverse()
   const pct = cb.openingBalance > 0 ? Math.min(100, (bal / cb.openingBalance) * 100) : 0
-  const allocatedTotal = voteCashbook.allocations.reduce((sum, a) => sum + a.amount, 0)
-  const stationUsed = voteCashbook.allocations.reduce((sum, a) => sum + a.used, 0)
-  const stationRemaining = voteCashbook.allocations.reduce((sum, a) => sum + a.remaining, 0)
-  const unallocatedBank = bal - allocatedTotal
-  const reconciliationDifference = bal - unallocatedBank - allocatedTotal
+  // Stage totals: allocated (handed to stations) → utilized (earmarked to vote
+  // items) → released (actually paid). Only a release reduces Cash in Bank.
+  const totals = voteCashbook.totals || { allocated: 0, utilized: 0, unutilized: 0, released: 0, unreleased: 0 }
+  const stationFundsHeld = totals.allocated - totals.released
+  const unallocatedBank = bal - stationFundsHeld
+  const reconciliationDifference = bal - unallocatedBank - stationFundsHeld
 
   const StatCard = ({ label, value, sub, color = "#1a2744" }: { label: string; value: string; sub?: string; color?: string }) => (
     <div className="gov-card p-4">
@@ -302,7 +308,7 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="font-mono text-[10px] text-white/50 uppercase tracking-widest mb-1">
-              Shared Cashbook — Available Balance
+              Cash in Bank — Available Balance
             </div>
             <div className={`font-mono text-3xl font-bold ${bal < 0 ? "text-red-400" : bal < 10000 ? "text-amber-300" : "text-emerald-400"}`}>
               {CUR} {fmtMoney(bal)}
@@ -316,8 +322,8 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
             <div className="font-mono text-2xl font-semibold text-white/70">
               {cb.openingBalance > 0 ? (100 - pct).toFixed(1) : "0.0"}%
             </div>
-            <button onClick={() => onAction("new")} className="gov-btn-gold mt-3">
-              + New Entry
+            <button onClick={() => onAction("utilize")} className="gov-btn-gold mt-3">
+              + Utilize Funds
             </button>
           </div>
         </div>
@@ -334,10 +340,10 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Today's Expenditure" value={`${CUR} ${fmtMoney(todaySpend)}`} sub={`${todayEntries.length} transaction${todayEntries.length !== 1 ? "s" : ""}`} color="#1e40af"/>
-        <StatCard label="Total Expenditure" value={`${CUR} ${fmtMoney(stationTotal)}`} sub={`${stationEntries.length} entries · all stations`} color="#047857"/>
-        <StatCard label="Total Entries" value={cb.entries.filter(e => e.type === "payment").length.toString()} sub="All stations" />
-        <StatCard label="Stations Active" value={[...new Set(cb.entries.map(e => e.station))].length.toString()} sub={`of ${stations.length} stations`} color="#c9a227"/>
+        <StatCard label="Released Today" value={`${CUR} ${fmtMoney(todaySpend)}`} sub={`${todayEntries.length} release${todayEntries.length !== 1 ? "s" : ""}`} color="#1e40af"/>
+        <StatCard label="Total Released" value={`${CUR} ${fmtMoney(stationTotal)}`} sub={`${stationEntries.length} payments · all stations`} color="#047857"/>
+        <StatCard label="Utilized to Votes" value={`${CUR} ${fmtMoney(totals.utilized)}`} sub={`${voteCashbook.utilizations.length} earmark${voteCashbook.utilizations.length !== 1 ? "s" : ""} awaiting release`} color="#b45309"/>
+        <StatCard label="Stations Active" value={[...new Set([...cb.entries.map(e => e.station), ...voteCashbook.allocations.map(a => a.station)])].length.toString()} sub={`of ${stations.length} stations`} color="#c9a227"/>
       </div>
 
       {user.role === "admin" && (
@@ -351,13 +357,14 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
               {Math.abs(reconciliationDifference) < 0.01 ? "BALANCED" : "CHECK DIFFERENCE"}
             </span>
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 p-5">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 p-5">
             {[
               ["Cash in Bank", bal, "#047857"],
-              ["Allocated to Stations", allocatedTotal, "#1e40af"],
-              ["Consumed by Stations", stationUsed, "#991b1b"],
-              ["Unused Station Funds", stationRemaining, "#b45309"],
               ["Unallocated Bank Funds", unallocatedBank, unallocatedBank < 0 ? "#991b1b" : "#1a2744"],
+              ["Held by Stations", stationFundsHeld, "#1e40af"],
+              ["Not Yet Utilized", totals.unutilized, "#b45309"],
+              ["Utilized, Not Released", totals.unreleased, "#92400e"],
+              ["Released / Paid", totals.released, "#991b1b"],
             ].map(([label, value, color]) => (
               <div key={label}>
                 <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
@@ -366,7 +373,8 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
             ))}
           </div>
           <div className="px-5 pb-4 font-sans text-xs text-[#4b5d84]">
-            Check: Cash in Bank = Unallocated Bank Funds + Allocated to Stations. Unaccounted difference: <strong className={Math.abs(reconciliationDifference) < 0.01 ? "text-emerald-700" : "text-red-700"}>TSh {fmtMoney(reconciliationDifference)}</strong>
+            Allocating and utilizing only reserve funds — the bank is debited when a vote is released.
+            Check: Cash in Bank = Unallocated Bank Funds + Held by Stations. Unaccounted difference: <strong className={Math.abs(reconciliationDifference) < 0.01 ? "text-emerald-700" : "text-red-700"}>TSh {fmtMoney(reconciliationDifference)}</strong>
           </div>
         </div>
       )}
@@ -380,35 +388,45 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
         {recentEntries.length === 0 ? (
           <div className="p-8 text-center font-sans text-sm text-[#8a96af]">No transactions yet. Post the first entry to get started.</div>
         ) : (
-          <table className="w-full">
-            <thead>
-              <tr style={{ background: "#f4f7fc" }}>
-                {["Date", "Station", "Vote Code", "Description", "Debit (TSh)", "Balance (TSh)"].map(h => (
-                  <th key={h} className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest text-left px-4 py-2.5 doc-line">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {recentEntries.map(e => (
-                <tr key={e.id} className="ledger-row">
-                  <td className="px-4 py-2.5 font-mono text-xs text-[#4b5d84] doc-line">{fmtDate(e.timestamp)}</td>
-                  <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
-                  <td className="px-4 py-2.5 doc-line">
-                    {e.type === "payment"
-                      ? <span className="chip chip-blue">{e.voteCode}</span>
-                      : <span className="chip chip-green">RECEIPT</span>}
-                  </td>
-                  <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">{e.description}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-right doc-line" style={{ color: e.type === "payment" ? "#991b1b" : "#047857" }}>
-                    {e.type === "payment" ? fmtMoney(e.debit) : "—"}
-                  </td>
-                  <td className="px-4 py-2.5 font-mono text-xs font-semibold text-right doc-line" style={{ color: "#1a2744" }}>
-                    {fmtMoney(e.balance)}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full table-fixed min-w-[900px]">
+              <colgroup>
+                <col style={{ width: "11%" }} />
+                <col style={{ width: "16%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "30%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "15%" }} />
+              </colgroup>
+              <thead>
+                <tr style={{ background: "#f4f7fc" }}>
+                  {["Date", "Station", "Vote Code", "Description", "Debit (TSh)", "Balance (TSh)"].map((h, index) => (
+                    <th key={h} className={`font-mono text-[10px] text-[#8a96af] uppercase tracking-widest px-4 py-2.5 doc-line whitespace-nowrap ${index >= 4 ? "text-right" : "text-left"}`}>{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {recentEntries.map(e => (
+                  <tr key={e.id} className="ledger-row">
+                    <td className="px-4 py-2.5 font-mono text-xs text-[#4b5d84] doc-line">{fmtDate(e.timestamp)}</td>
+                    <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
+                    <td className="px-4 py-2.5 doc-line">
+                      {e.type === "payment"
+                        ? <span className="chip chip-blue">{e.voteCode}</span>
+                        : <span className="chip chip-green">RECEIPT</span>}
+                    </td>
+                    <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line break-words">{e.description}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-right doc-line" style={{ color: e.type === "payment" ? "#991b1b" : "#047857" }}>
+                      {e.type === "payment" ? fmtMoney(e.debit) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs font-semibold text-right doc-line" style={{ color: "#1a2744" }}>
+                      {fmtMoney(e.balance)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
@@ -416,7 +434,7 @@ function Dashboard({ cb, user, stations, voteCashbook, onAction }: {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// ALLOCATE FUNDS TO A VOTE (admin only)
+// ALLOCATE GENERAL BANK FUNDS TO A STATION (admin only)
 // ══════════════════════════════════════════════════════════════════════════
 function AllocationForm({ stations, onSave }: {
   stations: Station[]; onSave: (p: AllocationPayload) => Promise<VoteAllocation>
@@ -432,7 +450,7 @@ function AllocationForm({ stations, onSave }: {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setError(""); setMessage("")
     if (!station || !amount || Number(amount) <= 0 || !description.trim()) {
-      setError("Select a station, then enter a positive amount and description.")
+      setError("Select a station, then enter a positive amount and purpose.")
       return
     }
     setSaving(true)
@@ -451,31 +469,32 @@ function AllocationForm({ stations, onSave }: {
     <div className="flex-1 overflow-y-auto p-6 lg:p-8">
       <div className="max-w-2xl">
         <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
-          <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Central Finance · Vote Cashbook</div>
-          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Allocate Funds to Vote</h1>
+          <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Central Finance · Station Funds</div>
+          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Allocate Funds to a Station</h1>
+          <p className="font-sans text-xs text-[#8a96af] mt-1">
+            Assigns part of the general funds in the bank to a station. The station chooses specific vote items later using Utilize to Vote.
+          </p>
         </div>
         {message && <div className="mb-4 px-4 py-3 text-sm text-emerald-800" style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 3 }}>{message}</div>}
         {error && <div className="mb-4 px-4 py-3 text-sm text-red-800" style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 3 }}>{error}</div>}
         <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Station</label>
-              <select className="gov-input" value={station} onChange={e => setStation(e.target.value)}>
-                <option value="">— Select Station —</option>
-                {stations.map(s => <option key={s.name} value={s.name}>{s.name} (Sub-Vote {s.subVote})</option>)}
-              </select>
-            </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Station</label>
+            <select className="gov-input" value={station} onChange={e => setStation(e.target.value)}>
+              <option value="">— Select Station —</option>
+              {stations.map(s => <option key={s.name} value={s.name}>{s.name} (Sub-Vote {s.subVote})</option>)}
+            </select>
           </div>
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Amount to Allocate (TSh)</label>
             <input type="number" min="0.01" step="0.01" className="gov-input" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" />
           </div>
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Description</label>
-            <input className="gov-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Q3 operational allocation" />
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Purpose</label>
+            <input className="gov-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Fuel for patrol boats — Q3" />
           </div>
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Allocation Reference</label>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Allocation Reference (optional)</label>
             <input className="gov-input" value={reference} onChange={e => setReference(e.target.value)} placeholder="Optional treasury or internal reference" />
           </div>
           <div className="flex justify-end pt-2" style={{ borderTop: "1px solid #d1d9e6" }}>
@@ -488,62 +507,70 @@ function AllocationForm({ stations, onSave }: {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// NEW VOTEBOOK ENTRY
+// STEP 2 — UTILIZE STATION FUNDS AGAINST A VOTE ITEM (the second-last step)
+// Earmarks money the station holds to a vote item. Nothing is paid and Cash in
+// Bank does not move — that only happens when the vote is released.
 // ══════════════════════════════════════════════════════════════════════════
-function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
-  user: SessionUser; cb: CashbookState; voteItems: VoteItem[]; stations: Station[]; voteCashbook: VoteCashbookState; onSave: (p: PaymentPayload) => Promise<VoteExpenditure>
+function UtilizeForm({ user, voteItems, stations, voteCashbook, onSave }: {
+  user: SessionUser; voteItems: VoteItem[]; stations: Station[]; voteCashbook: VoteCashbookState
+  onSave: (p: UtilizationPayload) => Promise<VoteUtilization>
 }) {
+  const [station, setStation] = useState("")
   const [selectedVote, setSelectedVote] = useState<VoteItem | null>(null)
-  const [allocationId, setAllocationId] = useState<number | null>(null)
   const [amount, setAmount] = useState("")
-  const [payee, setPayee] = useState("")
-  const [purpose, setPurpose] = useState("")
-  const [voucherNo, setVoucherNo] = useState("")
-  const [receiptNo, setReceiptNo] = useState("")
-  const [cashbookRef, setCashbookRef] = useState("")
-  const [success, setSuccess] = useState<VoteExpenditure | null>(null)
+  const [note, setNote] = useState("")
+  const [success, setSuccess] = useState<VoteUtilization | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [posting, setPosting] = useState(false)
+  const [saving, setSaving] = useState(false)
 
-  const allocation = voteCashbook.allocations.find(a => a.id === allocationId)
-  const stationName = allocation?.station || ""
-  const bal = allocation?.remaining ?? 0
+  // Allocations form a general fund for each station. Utilizations then assign
+  // that pooled station money to whichever vote items the station selects.
+  const stationFunds = useMemo(() => {
+    const map = new Map<string, { station: string; subVote: string; allocated: number; utilized: number }>()
+    for (const allocation of voteCashbook.allocations) {
+      const entry = map.get(allocation.station) || { station: allocation.station, subVote: allocation.subVote, allocated: 0, utilized: 0 }
+      entry.allocated += allocation.amount
+      map.set(allocation.station, entry)
+    }
+    for (const utilization of voteCashbook.utilizations) {
+      const entry = map.get(utilization.station)
+      if (entry) entry.utilized += utilization.amount
+    }
+    return [...map.values()].map(funds => ({ ...funds, available: funds.allocated - funds.utilized }))
+  }, [voteCashbook])
+
+  const selected = stationFunds.find(funds => funds.station === station)
+  const available = selected?.available ?? 0
   const amt = Number(amount) || 0
 
   function validate() {
     const e: Record<string, string> = {}
-    if (!allocation) e.vote = "Please select a funded vote allocation"
+    if (!station) e.station = "Please select a station"
     if (!selectedVote) e.vote = "Please select a vote item"
     if (!amount || isNaN(amt) || amt <= 0) e.amount = "Enter a valid amount greater than zero"
-    if (amt > bal) e.amount = `Insufficient balance. Available: TSh ${fmtMoney(bal)}`
-    if (!payee.trim()) e.payee = "Payee name is required"
-    if (!purpose.trim()) e.purpose = "Purpose / description is required"
+    if (amt > available) e.amount = `Insufficient station funds. Unutilized: TSh ${fmtMoney(available)}`
     setErrors(e)
     return Object.keys(e).length === 0
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!validate() || !allocation) return
-    setPosting(true)
+    if (!validate() || !selectedVote) return
+    setSaving(true)
     try {
-      const entry = await onSave({
-        allocationId: allocation.id,
-        voteCode: selectedVote?.code || "",
-        amount: amount,
-        payee: payee.trim(),
-        purpose: purpose.trim(),
-        voucherNo: voucherNo.trim(),
-        receiptNo: receiptNo.trim(),
-        cashbookRef: cashbookRef.trim(),
+      const utilization = await onSave({
+        station,
+        voteCode: selectedVote.code,
+        amount,
+        description: note.trim(),
       })
-      setSuccess(entry)
-      setAllocationId(null); setAmount(""); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
+      setSuccess(utilization)
+      setAmount(""); setNote("")
       setTimeout(() => setSuccess(null), 6000)
     } catch (err) {
-      setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to post entry. Please try again." }))
+      setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to utilize funds. Please try again." }))
     } finally {
-      setPosting(false)
+      setSaving(false)
     }
   }
 
@@ -552,24 +579,29 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
       <div className="max-w-2xl">
         <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
           <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
-            {stationName || "All Stations"} · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
+            Step 2 of 3 · {station || "All Stations"} · {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
           </div>
-          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">New Votebook Entry</h1>
+          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Utilize Funds to a Vote Item</h1>
+          <p className="font-sans text-xs text-[#8a96af] mt-1">
+            Earmarks money the station holds against a vote item. Cash in Bank is not touched — the vote is paid when you release it.
+          </p>
         </div>
 
-        {/* Balance notice */}
+        {/* Station funds notice */}
         <div className="mb-5 px-4 py-3 flex items-center justify-between gov-card">
           <div>
-            <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Available Balance</div>
-            <div className={`font-mono text-lg font-bold ${bal < 0 ? "text-red-600" : "text-emerald-700"}`}>
-              {CUR} {fmtMoney(bal)}
+            <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">
+              {station && selectedVote ? `${station} · ${selectedVote.description} — Unutilized` : station ? `${station} — Unutilized (all votes)` : "Station Funds Unutilized"}
+            </div>
+            <div className={`font-mono text-lg font-bold ${available < 0 ? "text-red-600" : "text-emerald-700"}`}>
+              {CUR} {fmtMoney(station && !selectedVote ? stationFunds.filter(f => f.station === station).reduce((s, f) => s + f.available, 0) : available)}
             </div>
           </div>
           {amt > 0 && (
             <div className="text-right">
-              <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Remaining After Entry</div>
-              <div className={`font-mono text-lg font-bold ${bal - amt < 0 ? "text-red-600" : "text-[#1a2744]"}`}>
-                {CUR} {fmtMoney(bal - amt)}
+              <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Left After Utilizing</div>
+              <div className={`font-mono text-lg font-bold ${available - amt < 0 ? "text-red-600" : "text-[#1a2744]"}`}>
+                {CUR} {fmtMoney(available - amt)}
               </div>
             </div>
           )}
@@ -578,10 +610,10 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
         {success && (
           <div className="mb-5 px-4 py-3" style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: "3px" }}>
             <div className="font-sans font-semibold text-sm text-emerald-800 mb-0.5">
-              ✓ Entry Posted Successfully — {success.id}
+              ✓ Utilized Successfully — {success.reference}
             </div>
             <div className="font-mono text-xs text-emerald-700">
-              {CUR} {fmtMoney(success.amount)} recorded against {success.allocationReference}.
+              {CUR} {fmtMoney(success.amount)} earmarked to {success.voteDescription} for {success.station}. Cash in Bank unchanged — release the vote to pay it.
             </div>
           </div>
         )}
@@ -589,43 +621,40 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
         <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Funded Vote Allocation <span className="text-red-500">*</span>
+              Station Funds <span className="text-red-500">*</span>
             </label>
-            <select className={`gov-input ${errors.vote ? "gov-input-error" : ""}`} value={allocationId ?? ""}
-              onChange={e => { setAllocationId(e.target.value ? Number(e.target.value) : null); setErrors(p => ({ ...p, vote: "" })) }}>
-              <option value="">— Select funded allocation —</option>
-              {voteCashbook.allocations.filter(a => a.remaining > 0).map(a => (
-                <option key={a.id} value={a.id}>{a.station} · Remaining TSh {fmtMoney(a.remaining)}</option>
+            <select className={`gov-input ${errors.station ? "gov-input-error" : ""}`} value={station}
+              onChange={e => {
+                setStation(e.target.value)
+                setSelectedVote(null)
+                setErrors(p => ({ ...p, station: "", vote: "" }))
+              }}>
+              <option value="">— Select a station with allocated funds —</option>
+              {stationFunds.filter(funds => funds.available > 0).map(funds => (
+                <option key={funds.station} value={funds.station}>{funds.station} (Sub-Vote {funds.subVote}) · Unutilized TSh {fmtMoney(funds.available)}</option>
               ))}
             </select>
-            {errors.vote && <p className="font-sans text-xs text-red-600 mt-1">{errors.vote}</p>}
+            {errors.station && <p className="font-sans text-xs text-red-600 mt-1">{errors.station}</p>}
           </div>
-          {/* Vote selector */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Vote Item / Code <span className="text-red-500">*</span>
+              Vote Item <span className="text-red-500">*</span>
             </label>
-            <select
-              className={`gov-input ${errors.vote ? "gov-input-error" : ""}`}
-              value={selectedVote ? `${selectedVote.code}|${selectedVote.description}` : ""}
+            <select className={`gov-input ${errors.vote ? "gov-input-error" : ""}`} value={selectedVote?.code || ""}
               onChange={e => {
-                const val = e.target.value
-                setSelectedVote(voteItems.find(v => `${v.code}|${v.description}` === val) || null)
+                setSelectedVote(voteItems.find(v => v.code === e.target.value) || null)
                 setErrors(p => ({ ...p, vote: "" }))
               }}>
-              <option value="">— Select Vote Item —</option>
-              {voteItems.filter(v => v.allowedStations.length === 0 || v.allowedStations.includes(stationName)).map(v => (
-                <option key={v.code + v.description} value={`${v.code}|${v.description}`}>
-                  {v.code}  ·  {v.description}{v.allowedStations.length > 0 ? " · Station-specific" : ""}
-                </option>
-              ))}
+              <option value="">— Select a vote item —</option>
+              {voteItems
+                .filter(v => !station || v.allowedStations.length === 0 || v.allowedStations.includes(station))
+                .map(v => <option key={v.code} value={v.code}>{v.code} · {v.description}</option>)}
             </select>
             {errors.vote && <p className="font-sans text-xs text-red-600 mt-1">{errors.vote}</p>}
-
             {selectedVote && (
               <div className="mt-2 grid grid-cols-4 gap-2 px-3 py-2"
                 style={{ background: "#f4f7fc", border: "1px solid #d1d9e6", borderRadius: "2px" }}>
-                {[["Vote", selectedVote.vote], ["Sub-Vote", stations.find(s => s.name === stationName)?.subVote ?? "—"], ["Item", selectedVote.item], ["Sub-Item", selectedVote.subItem]].map(([l, v]) => (
+                {[["Vote", selectedVote.vote], ["Sub-Vote", selected?.subVote ?? stations.find(s => s.name === station)?.subVote ?? "—"], ["Item", selectedVote.item], ["Sub-Item", selectedVote.subItem]].map(([l, v]) => (
                   <div key={l}>
                     <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{l}</div>
                     <div className="font-mono text-xs font-semibold text-[#1a2744]">{v}</div>
@@ -638,7 +667,7 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
           {/* Amount */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Amount (TSh) <span className="text-red-500">*</span>
+              Amount to Utilize (TSh) <span className="text-red-500">*</span>
             </label>
             <input type="number" min="0.01" step="0.01" className={`gov-input ${errors.amount ? "gov-input-error" : ""}`}
               value={amount} onChange={e => { setAmount(e.target.value); setErrors(p => ({ ...p, amount: "" })) }}
@@ -646,64 +675,227 @@ function NewEntryForm({ user, cb, voteItems, stations, voteCashbook, onSave }: {
             {errors.amount && <p className="font-sans text-xs text-red-600 mt-1">{errors.amount}</p>}
           </div>
 
-          {/* Payee */}
+          {/* Note */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Payee / Supplier <span className="text-red-500">*</span>
+              Note (optional)
             </label>
-            <input type="text" className={`gov-input ${errors.payee ? "gov-input-error" : ""}`}
-              value={payee} onChange={e => { setPayee(e.target.value); setErrors(p => ({ ...p, payee: "" })) }}
-              placeholder="Full name of payee or supplier" />
-            {errors.payee && <p className="font-sans text-xs text-red-600 mt-1">{errors.payee}</p>}
-          </div>
-
-          {/* Purpose */}
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-              Purpose / Description <span className="text-red-500">*</span>
-            </label>
-            <textarea rows={3} className={`gov-input resize-none ${errors.purpose ? "gov-input-error" : ""}`}
-              value={purpose} onChange={e => { setPurpose(e.target.value); setErrors(p => ({ ...p, purpose: "" })) }}
-              placeholder="Describe the purpose of this expenditure in detail..."/>
-            {errors.purpose && <p className="font-sans text-xs text-red-600 mt-1">{errors.purpose}</p>}
-          </div>
-
-          {/* Voucher, receipt and cashbook references */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Voucher No.
-              </label>
-              <input type="text" className="gov-input" value={voucherNo}
-                onChange={e => setVoucherNo(e.target.value)} placeholder="e.g. VOU-00123" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Receipt No.
-              </label>
-              <input type="text" className="gov-input" value={receiptNo}
-                onChange={e => setReceiptNo(e.target.value)} placeholder="e.g. REC-00123"/>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Cashbook Ref.
-              </label>
-              <input type="text" className="gov-input" value={cashbookRef}
-                onChange={e => setCashbookRef(e.target.value)} placeholder="e.g. CB-2039-001"/>
-            </div>
+            <textarea rows={3} className="gov-input resize-none"
+              value={note} onChange={e => setNote(e.target.value)}
+              placeholder="e.g. Fuel for operations — to be released on voucher"/>
           </div>
 
           <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid #d1d9e6" }}>
             <div>
               <p className="font-sans text-xs text-[#8a96af]">
-                Posting as <strong className="text-[#1a2744]">{user.name}</strong>
-                {stationName ? <> for <strong className="text-[#1a2744]">{stationName}</strong></> : null}
+                Utilizing as <strong className="text-[#1a2744]">{user.name}</strong>
+                {station ? <> for <strong className="text-[#1a2744]">{station}</strong></> : null}
               </p>
-              <p className="font-sans text-xs text-[#8a96af]">Shared cashbook · all stations</p>
+              <p className="font-sans text-xs text-[#8a96af]">Reserves only — Cash in Bank is unchanged until release</p>
             </div>
-            <button type="submit" className="gov-btn-primary" disabled={posting}>{posting ? "Posting…" : "Post Entry"}</button>
+            <button type="submit" className="gov-btn-primary" disabled={saving}>{saving ? "Utilizing…" : "Utilize Funds"}</button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// STEP 3 — RELEASE / SPEND A UTILIZED VOTE (the final step)
+// Shows the votes a station has already utilized and posts the actual payment.
+// This is the only votebook action that debits Cash in Bank.
+// ══════════════════════════════════════════════════════════════════════════
+function ReleaseForm({ user, voteCashbook, onSave }: {
+  user: SessionUser; voteCashbook: VoteCashbookState
+  onSave: (p: ReleasePayload) => Promise<{ expenditure: VoteExpenditure; entry: CashbookEntry }>
+}) {
+  const [filterStation, setFilterStation] = useState("all")
+  const [utilizationId, setUtilizationId] = useState<number | null>(null)
+  const [amount, setAmount] = useState("")
+  const [payee, setPayee] = useState("")
+  const [purpose, setPurpose] = useState("")
+  const [voucherNo, setVoucherNo] = useState("")
+  const [receiptNo, setReceiptNo] = useState("")
+  const [cashbookRef, setCashbookRef] = useState("")
+  const [success, setSuccess] = useState<{ id: string; amount: number; bankBalance: number } | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [releasing, setReleasing] = useState(false)
+
+  const open = voteCashbook.utilizations.filter(u => u.remaining > 0)
+  const visible = filterStation === "all" ? open : open.filter(u => u.station === filterStation)
+  const selected = open.find(u => u.id === utilizationId)
+  const remaining = selected?.remaining ?? 0
+  const amt = Number(amount) || 0
+  const stationsWithVotes = [...new Set(open.map(u => u.station))]
+
+  function pick(u: VoteUtilization) {
+    setUtilizationId(u.id)
+    setAmount(u.remaining.toString())
+    setErrors({})
+    setSuccess(null)
+  }
+
+  function validate() {
+    const e: Record<string, string> = {}
+    if (!selected) e.amount = "Please select a utilized vote to release"
+    if (!amount || isNaN(amt) || amt <= 0) e.amount = "Enter a valid amount greater than zero"
+    if (amt > remaining) e.amount = `Insufficient utilized funds. Available: TSh ${fmtMoney(remaining)}`
+    if (!payee.trim()) e.payee = "Payee name is required"
+    if (!purpose.trim()) e.purpose = "Purpose / description is required"
+    setErrors(e)
+    return Object.keys(e).length === 0
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!validate() || !selected) return
+    setReleasing(true)
+    try {
+      const res = await onSave({
+        utilizationId: selected.id,
+        amount,
+        payee: payee.trim(),
+        purpose: purpose.trim(),
+        voucherNo: voucherNo.trim(),
+        receiptNo: receiptNo.trim(),
+        cashbookRef: cashbookRef.trim(),
+      })
+      setSuccess({ id: res.expenditure.id, amount: res.expenditure.amount, bankBalance: res.entry.balance })
+      setUtilizationId(null); setAmount(""); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
+    } catch (err) {
+      setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to release the vote." }))
+    } finally {
+      setReleasing(false)
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8">
+      <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
+        <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
+          Step 3 of 3 · {user.station}
+        </div>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Release / Pay a Utilized Vote</h1>
+        <p className="font-sans text-xs text-[#8a96af] mt-1">
+          Pick a vote a station has already utilized, pay it, and Cash in Bank is debited here.
+        </p>
+      </div>
+
+      {success && (
+        <div className="mb-5 px-4 py-3" style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: "3px" }}>
+          <div className="font-sans font-semibold text-sm text-emerald-800 mb-0.5">✓ Released — {success.id}</div>
+          <div className="font-mono text-xs text-emerald-700">
+            TSh {fmtMoney(success.amount)} paid. Cash in Bank is now {CUR} {fmtMoney(success.bankBalance)}.
+          </div>
+        </div>
+      )}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* Utilized votes waiting to be released */}
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h2 className="font-serif font-bold text-[#1a2744]">Utilized Votes Awaiting Release</h2>
+            <select className="gov-input" style={{ width: "auto" }} value={filterStation} onChange={e => setFilterStation(e.target.value)}>
+              <option value="all">All Stations</option>
+              {stationsWithVotes.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          {visible.length === 0 ? (
+            <div className="gov-card p-6 font-sans text-sm text-[#8a96af]">
+              Nothing to release yet. Use <strong>Utilize to Vote</strong> to earmark station funds against a vote item first.
+            </div>
+          ) : (
+            <div className="gov-card divide-y divide-[#d1d9e6] overflow-hidden">
+              {visible.map(u => (
+                <button key={u.id} type="button" onClick={() => pick(u)}
+                  className={`w-full text-left px-4 py-3 flex items-center gap-3 cursor-pointer ${utilizationId === u.id ? "bg-[#eef3fb]" : "hover:bg-[#f8f9fc]"}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-sans text-sm font-semibold text-[#1a2744]">{u.station} · {u.voteDescription}</div>
+                    <div className="font-mono text-[10px] text-[#8a96af] mt-0.5">
+                      {u.reference} · {u.voteCode} · Sub-Vote {u.subVote}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Available</div>
+                    <div className="font-mono text-sm font-semibold text-emerald-700">TSh {fmtMoney(u.remaining)}</div>
+                    <div className="font-mono text-[10px] text-[#c3d0e8]">of {fmtMoney(u.amount)} utilized</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Release form */}
+        <div>
+          <h2 className="font-serif font-bold text-[#1a2744] mb-3">Post the Payment</h2>
+          <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
+            <div className="px-4 py-3" style={{ background: "#f4f7fc", border: "1px solid #d1d9e6", borderRadius: "2px" }}>
+              <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Selected Vote</div>
+              <div className="font-sans text-sm font-semibold text-[#1a2744] mt-1">
+                {selected ? `${selected.station} · ${selected.voteDescription}` : "— none selected —"}
+              </div>
+              <div className="font-mono text-xs text-emerald-700 mt-1">Available to release: {CUR} {fmtMoney(remaining)}</div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Amount to Release (TSh) <span className="text-red-500">*</span>
+              </label>
+              <input type="number" min="0.01" step="0.01" className={`gov-input ${errors.amount ? "gov-input-error" : ""}`}
+                value={amount} onChange={e => { setAmount(e.target.value); setErrors(p => ({ ...p, amount: "" })) }}
+                placeholder="0.00" />
+              {errors.amount && <p className="font-sans text-xs text-red-600 mt-1">{errors.amount}</p>}
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Payee / Supplier <span className="text-red-500">*</span>
+              </label>
+              <input type="text" className={`gov-input ${errors.payee ? "gov-input-error" : ""}`}
+                value={payee} onChange={e => { setPayee(e.target.value); setErrors(p => ({ ...p, payee: "" })) }}
+                placeholder="Full name of payee or supplier" />
+              {errors.payee && <p className="font-sans text-xs text-red-600 mt-1">{errors.payee}</p>}
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Purpose / Description <span className="text-red-500">*</span>
+              </label>
+              <textarea rows={3} className={`gov-input resize-none ${errors.purpose ? "gov-input-error" : ""}`}
+                value={purpose} onChange={e => { setPurpose(e.target.value); setErrors(p => ({ ...p, purpose: "" })) }}
+                placeholder="Describe what is being paid for..."/>
+              {errors.purpose && <p className="font-sans text-xs text-red-600 mt-1">{errors.purpose}</p>}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Voucher No.</label>
+                <input type="text" className="gov-input" value={voucherNo}
+                  onChange={e => setVoucherNo(e.target.value)} placeholder="e.g. VOU-00123" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Receipt No.</label>
+                <input type="text" className="gov-input" value={receiptNo}
+                  onChange={e => setReceiptNo(e.target.value)} placeholder="e.g. REC-00123"/>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">Cashbook Ref.</label>
+                <input type="text" className="gov-input" value={cashbookRef}
+                  onChange={e => setCashbookRef(e.target.value)} placeholder="e.g. CB-2039-001"/>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid #d1d9e6" }}>
+              <div>
+                <p className="font-sans text-xs text-[#8a96af]">
+                  Releasing as <strong className="text-[#1a2744]">{user.name}</strong>
+                </p>
+                <p className="font-sans text-xs text-[#8a96af]">Debits Cash in Bank · partial releases allowed</p>
+              </div>
+              <button type="submit" className="gov-btn-gold" disabled={releasing}>{releasing ? "Releasing / Paying…" : "Release / Pay"}</button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   )
@@ -736,9 +928,9 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station
     <div className="flex-1 flex flex-col min-h-0 p-6 lg:p-8">
       <div className="mb-5 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
-          Shared Cashbook · All Stations
+          Cash in Bank · All Stations
         </div>
-        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Cashbook Ledger</h1>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Cash in Bank Ledger</h1>
       </div>
 
       {/* Opening balance row */}
@@ -782,11 +974,22 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station
             <div className="font-sans text-xs text-[#c3d0e8] mt-1">Adjust your filters or post a new entry</div>
           </div>
         ) : (
-          <table className="w-full min-w-[900px]">
+          <table className="w-full table-fixed min-w-[1320px]">
+            <colgroup>
+              <col style={{ width: 105 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 125 }} />
+              <col style={{ width: 250 }} />
+              <col style={{ width: 135 }} />
+              <col style={{ width: 180 }} />
+              <col style={{ width: 125 }} />
+              <col style={{ width: 125 }} />
+              <col style={{ width: 145 }} />
+            </colgroup>
             <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
               <tr style={{ background: "#1a2744" }}>
-                {["Date", "Ref / ID", "Station", "Description", "Vote Code", "Payee", "Debit (TSh)", "Credit (TSh)", "Balance (TSh)"].map(h => (
-                  <th key={h} className="font-mono text-[10px] text-white/60 uppercase tracking-widest text-left px-4 py-3">{h}</th>
+                {["Date", "Ref / ID", "Station", "Description", "Vote Code", "Payee", "Debit (TSh)", "Credit (TSh)", "Balance (TSh)"].map((h, index) => (
+                  <th key={h} className={`font-mono text-[10px] text-white/60 uppercase tracking-widest px-4 py-3 whitespace-nowrap ${index >= 6 ? "text-right" : "text-left"}`}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -803,8 +1006,8 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station
                   </td>
                   <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
                   <td className="px-4 py-2.5 doc-line">
-                    <div className="font-sans text-sm text-[#1a2744] font-medium">{e.description}</div>
-                    {e.purpose && <div className="font-sans text-[11px] text-[#8a96af] mt-0.5 max-w-[180px] truncate">{e.purpose}</div>}
+                    <div className="font-sans text-sm text-[#1a2744] font-medium break-words">{e.description}</div>
+                    {e.purpose && <div className="font-sans text-[11px] text-[#8a96af] mt-0.5 break-words">{e.purpose}</div>}
                   </td>
                   <td className="px-4 py-2.5 doc-line">
                     {e.type === "payment"
@@ -839,7 +1042,7 @@ function CashbookLedger({ cb, stations }: { cb: CashbookState; stations: Station
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// VOTEBOOK RECORDS (votebook entries only, by station)
+// VOTEBOOK CASH — what each station holds, utilized and released
 // ══════════════════════════════════════════════════════════════════════════
 function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: VoteCashbookState; stations: Station[]; voteItems: VoteItem[] }) {
   const [filterStation, setFilterStation] = useState("all")
@@ -861,34 +1064,134 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
 
   const uniqueCodes = [...new Set(payments.map(e => e.voteCode))]
   const total = filtered.reduce((s, e) => s + e.amount, 0)
+  const totals = voteCashbook.totals || { allocated: 0, utilized: 0, unutilized: 0, released: 0, unreleased: 0 }
+  const utilizations = voteCashbook.utilizations
+
+  // Per-station view of the three stages: allocated → utilized → released.
+  const stationRows = useMemo(() => {
+    const map = new Map<string, { station: string; subVote: string; allocated: number; utilized: number; released: number }>()
+    for (const a of voteCashbook.allocations) {
+      const r = map.get(a.station) || { station: a.station, subVote: a.subVote, allocated: 0, utilized: 0, released: 0 }
+      r.allocated += a.amount
+      map.set(a.station, r)
+    }
+    for (const u of voteCashbook.utilizations) {
+      const r = map.get(u.station)
+      if (r) { r.utilized += u.amount; r.released += u.released }
+    }
+    return [...map.values()].sort((x, y) => y.allocated - x.allocated)
+  }, [voteCashbook])
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 p-6 lg:p-8">
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8">
       <div className="mb-5 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
-        <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Votebook Module</div>
-        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Votebook Records</h1>
+        <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
+          Votebook Module · {voteCashbook.period?.key || "current period"}
+        </div>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Votebook Cash</h1>
+        <p className="font-sans text-xs text-[#8a96af] mt-1">
+          Money held by each station, what has been utilized to vote items, and what has been released (paid out of Cash in Bank).
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-5">
-        {voteCashbook.allocations.map(a => (
-          <div key={a.id} className="gov-card p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest">{a.station} · Sub-Vote {a.subVote}</div>
-                <div className="font-sans font-semibold text-sm text-[#1a2744] mt-1">Station allocation</div>
-              </div>
-              <span className={`chip ${a.remaining > 0 ? "chip-green" : "chip-amber"}`}>{a.remaining > 0 ? "AVAILABLE" : "USED"}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 mt-4">
-              {[["Allocated", a.amount], ["Used", a.used], ["Remaining", a.remaining]].map(([label, value]) => (
-                <div key={label}>
-                  <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
-                  <div className="font-mono text-xs font-semibold text-[#1a2744] mt-1">TSh {fmtMoney(Number(value))}</div>
-                </div>
-              ))}
-            </div>
+      {/* Stage totals */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        {[
+          ["Allocated", totals.allocated, "#1e40af"],
+          ["Utilized to Votes", totals.utilized, "#b45309"],
+          ["Unutilized", totals.unutilized, "#0f766e"],
+          ["Released / Paid", totals.released, "#991b1b"],
+          ["Utilized, Not Released", totals.unreleased, "#92400e"],
+        ].map(([label, value, color]) => (
+          <div key={String(label)} className="gov-card p-4">
+            <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
+            <div className="font-mono text-lg font-semibold mt-1" style={{ color: String(color) }}>TSh {fmtMoney(Number(value))}</div>
           </div>
         ))}
+      </div>
+
+      {/* Per-station funds */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
+        {stationRows.map(s => {
+          const unutilized = s.allocated - s.utilized
+          return (
+            <div key={s.station} className="gov-card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest">{s.station} · Sub-Vote {s.subVote}</div>
+                  <div className="font-sans font-semibold text-sm text-[#1a2744] mt-1">Station funds</div>
+                </div>
+                <span className={`chip ${unutilized > 0 ? "chip-green" : "chip-blue"}`}>
+                  {unutilized > 0 ? `TSh ${fmtMoney(unutilized)} FREE` : "FULLY UTILIZED"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-4">
+                {[["Allocated", s.allocated], ["Utilized", s.utilized], ["Released", s.released], ["Unutilized", unutilized]].map(([label, value]) => (
+                  <div key={String(label)}>
+                    <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">{label}</div>
+                    <div className="font-mono text-xs font-semibold text-[#1a2744] mt-1">TSh {fmtMoney(Number(value))}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+        {stationRows.length === 0 && (
+          <div className="gov-card p-6 font-sans text-sm text-[#8a96af] md:col-span-2 xl:col-span-3">
+            No station has been allocated funds in this period yet.
+          </div>
+        )}
+      </div>
+      {/* Utilized votes awaiting release */}
+      <div className="gov-card overflow-hidden mb-6">
+        <div className="px-5 py-3 flex items-center justify-between" style={{ background: "#1a2744" }}>
+          <h2 className="font-mono text-xs text-white/80 uppercase tracking-widest">Utilized Votes</h2>
+          <span className="font-mono text-[10px] text-white/50">{utilizations.length} earmark{utilizations.length !== 1 ? "s" : ""}</span>
+        </div>
+        {utilizations.length === 0 ? (
+          <div className="p-5 font-sans text-sm text-[#8a96af]">No station funds have been utilized to a vote item yet.</div>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full table-fixed min-w-[1480px]">
+              <colgroup>
+                <col style={{ width: 135 }} />
+                <col style={{ width: 210 }} />
+                <col style={{ width: 190 }} />
+                <col style={{ width: 140 }} />
+                <col style={{ width: 260 }} />
+                <col style={{ width: 180 }} />
+                <col style={{ width: 180 }} />
+                <col style={{ width: 185 }} />
+              </colgroup>
+              <thead>
+                <tr style={{ background: "#f4f7fc" }}>
+                  {["Utilized", "Ref", "Station", "Vote Code", "Vote Item", "Utilized (TSh)", "Released (TSh)", "Available (TSh)"].map((h, index) => (
+                    <th key={h} className={`font-mono text-[10px] text-[#8a96af] uppercase tracking-widest px-4 py-2.5 doc-line whitespace-nowrap ${index >= 5 ? "text-right" : "text-left"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...utilizations].reverse().map(u => (
+                  <tr key={u.id} className="ledger-row">
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#4b5d84] doc-line">{fmtDate(u.timestamp)}</td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] doc-line" style={{ color: "#1e40af" }}>{u.reference}</td>
+                    <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{u.station}</td>
+                    <td className="px-4 py-2.5 doc-line"><span className="chip chip-blue">{u.voteCode}</span></td>
+                    <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">{u.voteDescription}</td>
+                    <td className="px-4 py-2.5 font-mono text-sm text-right doc-line">{fmtMoney(u.amount)}</td>
+                    <td className="px-4 py-2.5 font-mono text-sm text-right doc-line" style={{ color: "#991b1b" }}>{fmtMoney(u.released)}</td>
+                    <td className="px-4 py-2.5 font-mono text-sm font-semibold text-right doc-line" style={{ color: u.remaining > 0 ? "#047857" : "#8a96af" }}>{fmtMoney(u.remaining)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="mb-3">
+        <h2 className="font-serif font-bold text-[#1a2744]">Released Payments</h2>
+        <p className="font-sans text-xs text-[#8a96af]">Payments already made — these are the entries that reduced Cash in Bank.</p>
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4">
@@ -919,11 +1222,22 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
             <div className="font-serif text-[#8a96af]">No entries found</div>
           </div>
         ) : (
-          <table className="w-full min-w-[800px]">
+          <table className="w-full table-fixed min-w-[1280px]">
+            <colgroup>
+              <col style={{ width: 105 }} />
+              <col style={{ width: 145 }} />
+              <col style={{ width: 125 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 200 }} />
+              <col style={{ width: 180 }} />
+              <col style={{ width: 160 }} />
+              <col style={{ width: 125 }} />
+              <col style={{ width: 120 }} />
+            </colgroup>
             <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
               <tr style={{ background: "#1a2744" }}>
-                {["Date / Time", "Entry ID", "Station", "Vote Code", "Description", "Payee", "Purpose", "Amount (TSh)", "Officer"].map(h => (
-                  <th key={h} className="font-mono text-[10px] text-white/60 uppercase tracking-widest text-left px-4 py-3">{h}</th>
+                {["Date / Time", "Entry ID", "Station", "Vote Code", "Description", "Payee", "Purpose", "Amount (TSh)", "Officer"].map((h, index) => (
+                  <th key={h} className={`font-mono text-[10px] text-white/60 uppercase tracking-widest px-4 py-3 whitespace-nowrap ${index === 7 ? "text-right" : "text-left"}`}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -940,16 +1254,16 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
                   <td className="px-4 py-2.5 font-sans text-xs text-[#1a2744] doc-line">{e.station}</td>
                   <td className="px-4 py-2.5 doc-line">
                     <span className="chip chip-blue">{e.voteCode}</span>
-                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">Sub-Vote {e.subVote} · {e.allocationReference}</div>
+                    <div className="font-mono text-[9px] text-[#c3d0e8] mt-0.5">Sub-Vote {e.subVote} · {e.utilizationReference || "pre-existing entry"}</div>
                   </td>
-                  <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line font-medium">{e.voteDescription}</td>
+                  <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line font-medium break-words">{e.voteDescription}</td>
                   <td className="px-4 py-2.5 font-sans text-sm text-[#1a2744] doc-line">
                     {e.payee}
                     {e.voucherNo && <div className="font-mono text-[10px] text-[#8a96af]">Voucher: {e.voucherNo}</div>}
                     {e.receiptNo && <div className="font-mono text-[10px] text-[#8a96af]">{e.receiptNo}</div>}
                   </td>
-                  <td className="px-4 py-2.5 font-sans text-xs text-[#4b5d84] doc-line max-w-[160px]">
-                    <div className="truncate">{e.purpose}</div>
+                  <td className="px-4 py-2.5 font-sans text-xs text-[#4b5d84] doc-line">
+                    <div className="break-words">{e.purpose}</div>
                   </td>
                   <td className="px-4 py-2.5 font-mono text-sm font-semibold text-right doc-line" style={{ color: "#991b1b" }}>
                     {fmtMoney(e.amount)}
@@ -994,9 +1308,9 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
           <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Access Restricted</div>
           <h1 className="font-serif text-xl font-bold text-[#1a2744] mb-2">Cashbook Management Locked</h1>
           <p className="font-sans text-sm text-[#4b5d84]">
-            All stations share one cashbook. Station officers may make votebook payments (debits) only —
-            crediting funds and setting the opening balance are reserved for the administrator
-            signed in at <strong>Central Finance</strong>.
+            All stations share one Cash in Bank. Station officers utilize station funds and release votes,
+            while crediting funds, setting the opening balance, allocating to stations and closing the month
+            are reserved for the administrator signed in at <strong>Central Finance</strong>.
           </p>
         </div>
       </div>
@@ -1048,7 +1362,10 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
       <div className="max-w-lg">
         <div className="mb-6 pb-4" style={{ borderBottom: "2px solid #d1d9e6" }}>
           <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">Administrator · Finance</div>
-          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Cashbook Management</h1>
+          <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Cash in Bank Management</h1>
+          <p className="font-sans text-xs text-[#8a96af] mt-1">
+            Credits and the opening balance are the money the bank holds. Allocating and utilizing only reserve it — the balance falls when a vote is released.
+          </p>
         </div>
 
         <div className="mb-5 px-4 py-3 gov-card flex items-center justify-between gap-4">
@@ -1149,7 +1466,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod }: {
 // ══════════════════════════════════════════════════════════════════════════
 // SUMMARY REPORT
 // ══════════════════════════════════════════════════════════════════════════
-function SummaryReport({ cb }: { cb: CashbookState }) {
+function SummaryReport({ cb, voteCashbook }: { cb: CashbookState; voteCashbook: VoteCashbookState }) {
   const payments = cb.entries.filter(e => e.type === "payment")
   const byStation = useMemo(() => {
     const map: Record<string, { count: number; total: number }> = {}
@@ -1180,11 +1497,12 @@ function SummaryReport({ cb }: { cb: CashbookState }) {
       </div>
 
       {/* Top stats */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {[
-          ["Total Expenditure", `${CUR} ${fmtMoney(grandTotal)}`, "#991b1b"],
+          ["Total Released", `${CUR} ${fmtMoney(grandTotal)}`, "#991b1b"],
+          ["Utilized to Votes", `${CUR} ${fmtMoney(voteCashbook.totals?.utilized ?? 0)}`, "#b45309"],
           ["Available Balance", `${CUR} ${fmtMoney(bal)}`, bal >= 0 ? "#047857" : "#991b1b"],
-          ["Total Entries", payments.length.toString(), "#1e40af"],
+          ["Total Payments", payments.length.toString(), "#1e40af"],
         ].map(([label, val, color]) => (
           <div key={label} className="gov-card p-4">
             <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-2">{label}</div>
@@ -1197,7 +1515,7 @@ function SummaryReport({ cb }: { cb: CashbookState }) {
         {/* By station */}
         <div className="gov-card">
           <div className="px-5 py-3" style={{ background: "#1a2744", borderRadius: "3px 3px 0 0" }}>
-            <h2 className="font-sans font-semibold text-sm text-white uppercase tracking-widest">Expenditure by Station</h2>
+            <h2 className="font-sans font-semibold text-sm text-white uppercase tracking-widest">Released by Station</h2>
           </div>
           <div className="p-5 space-y-4">
             {byStation.length === 0 && <p className="font-sans text-sm text-[#8a96af]">No data.</p>}
@@ -1225,7 +1543,7 @@ function SummaryReport({ cb }: { cb: CashbookState }) {
         {/* By vote code */}
         <div className="gov-card">
           <div className="px-5 py-3" style={{ background: "#1a2744", borderRadius: "3px 3px 0 0" }}>
-            <h2 className="font-sans font-semibold text-sm text-white uppercase tracking-widest">Expenditure by Vote Code</h2>
+            <h2 className="font-sans font-semibold text-sm text-white uppercase tracking-widest">Released by Vote Code</h2>
           </div>
           <div className="divide-y divide-[#d1d9e6]">
             {byVote.length === 0 && <p className="font-sans text-sm text-[#8a96af] p-5">No data.</p>}
@@ -1286,8 +1604,15 @@ function PeriodHistory({ token }: { token: string }) {
       </div>
       {selected && cashbook && votes && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            {[["Opening Bank", cashbook.openingBalance], ["Closing Bank", bankClosing], ["Allocations", votes.allocations.reduce((s, a) => s + a.amount, 0)], ["Vote Expenditure", used]].map(([label, value]) => (
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
+            {[
+              ["Opening Bank", cashbook.openingBalance],
+              ["Closing Bank", bankClosing],
+              ["Allocated", votes.allocations.reduce((s, a) => s + a.amount, 0)],
+              ["Utilized", votes.utilizations.reduce((s, u) => s + u.amount, 0)],
+              ["Un-released", votes.utilizations.reduce((s, u) => s + u.remaining, 0)],
+              ["Released / Paid", used],
+            ].map(([label, value]) => (
               <div key={label} className="gov-card p-4"><div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-2">{label}</div><div className="font-mono text-lg font-semibold text-[#1a2744]">TSh {fmtMoney(Number(value))}</div></div>
             ))}
           </div>
@@ -1295,9 +1620,13 @@ function PeriodHistory({ token }: { token: string }) {
             <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Bank Transactions</h2></div>
             {cashbook.entries.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No bank transactions in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{cashbook.entries.map(e => <div key={e.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{e.description}</span><span className="font-mono">{e.credit ? `+TSh ${fmtMoney(e.credit)}` : `-TSh ${fmtMoney(e.debit)}`}</span></div>)}</div>}
           </div>
+          <div className="gov-card overflow-hidden mb-6">
+            <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Utilized Votes</h2></div>
+            {votes.utilizations.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No vote utilizations in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{votes.utilizations.map(u => <div key={u.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{u.station} · {u.voteCode} · {u.voteDescription}</span><span className="font-mono">TSh {fmtMoney(u.amount)} <span className="text-[#8a96af]">({fmtMoney(u.remaining)} unreleased)</span></span></div>)}</div>}
+          </div>
           <div className="gov-card overflow-hidden">
-            <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Vote Expenditure</h2></div>
-            {votes.expenditures.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No vote expenditures in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{votes.expenditures.map(e => <div key={e.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{e.station} · {e.voteCode} · {e.payee}</span><span className="font-mono">TSh {fmtMoney(e.amount)}</span></div>)}</div>}
+            <div className="px-5 py-3" style={{ background: "#1a2744" }}><h2 className="font-semibold text-sm text-white uppercase tracking-widest">Released Payments</h2></div>
+            {votes.expenditures.length === 0 ? <div className="p-5 text-sm text-[#8a96af]">No released payments in this period.</div> : <div className="divide-y divide-[#d1d9e6]">{votes.expenditures.map(e => <div key={e.id} className="px-5 py-3 flex justify-between gap-4 text-sm"><span>{e.station} · {e.voteCode} · {e.payee}</span><span className="font-mono">TSh {fmtMoney(e.amount)}</span></div>)}</div>}
           </div>
         </>
       )}
@@ -1314,7 +1643,7 @@ export default function App() {
   const token = session?.token ?? null
   const [view, setView] = useState("dashboard")
   const [cb, setCb] = useState<CashbookState>({ openingBalance: 0, entries: [] })
-  const [voteCashbook, setVoteCashbook] = useState<VoteCashbookState>({ allocations: [], expenditures: [] })
+  const [voteCashbook, setVoteCashbook] = useState<VoteCashbookState>({ allocations: [], utilizations: [], expenditures: [] })
   const [stations, setStations] = useState<Station[]>([])
   const [voteItems, setVoteItems] = useState<VoteItem[]>([])
   const [dataErr, setDataErr] = useState("")
@@ -1355,15 +1684,27 @@ export default function App() {
     setView("dashboard")
   }
 
-  async function addPayment(p: PaymentPayload): Promise<VoteExpenditure> {
-    const res = await api.addPayment(token!, p)
-    setVoteCashbook({ allocations: res.allocations, expenditures: res.expenditures })
-    return res.expenditure
+  // Stage 2 — utilize: earmarks station funds to a vote item. No bank movement.
+  async function addUtilization(p: UtilizationPayload): Promise<VoteUtilization> {
+    const res = await api.addUtilization(token!, p)
+    setVoteCashbook({ allocations: res.allocations, utilizations: res.utilizations, expenditures: res.expenditures, totals: res.totals })
+    return res.utilization
+  }
+
+  // Stage 3 — release: pays a utilized vote and debits Cash in Bank.
+  async function addRelease(p: ReleasePayload): Promise<{ expenditure: VoteExpenditure; entry: CashbookEntry }> {
+    const res = await api.addRelease(token!, p)
+    setVoteCashbook({ allocations: res.allocations, utilizations: res.utilizations, expenditures: res.expenditures, totals: res.totals })
+    setCb(prev => {
+      const entries = prev.entries.filter(e => e.id !== res.entry.id)
+      return { ...prev, entries: [...entries, res.entry] }
+    })
+    return { expenditure: res.expenditure, entry: res.entry }
   }
 
   async function addAllocation(p: AllocationPayload): Promise<VoteAllocation> {
     const res = await api.addAllocation(token!, p)
-    setVoteCashbook({ allocations: res.allocations, expenditures: res.expenditures })
+    setVoteCashbook({ allocations: res.allocations, utilizations: res.utilizations, expenditures: res.expenditures, totals: res.totals })
     return res.allocation
   }
 
@@ -1380,7 +1721,7 @@ export default function App() {
   async function closePeriod(): Promise<string> {
     const result = await api.closeAccountingPeriod(token!)
     setDataTick(t => t + 1)
-    return `${result.closed.key} closed. ${result.closed.carriedAllocations} unused station allocation(s) carried into ${result.current.key}.`
+    return `${result.closed.key} closed. ${result.closed.carriedAllocations} station fund(s) and ${result.closed.carriedUtilizations} un-released vote(s) carried into ${result.current.key} (opening ${CUR} ${fmtMoney(result.current.openingBankBalance)}).`
   }
 
   if (!user) return <LoginScreen onLogin={handleLogin} />
@@ -1428,7 +1769,8 @@ export default function App() {
         )}
 
         {view === "dashboard" && <Dashboard cb={cb} user={user} stations={stations} voteCashbook={voteCashbook} onAction={setView} />}
-        {view === "new"       && <NewEntryForm user={user} cb={cb} voteItems={voteItems} stations={stations} voteCashbook={voteCashbook} onSave={addPayment} />}
+        {view === "utilize"   && <UtilizeForm user={user} voteItems={voteItems} stations={stations} voteCashbook={voteCashbook} onSave={addUtilization} />}
+        {view === "release"   && <ReleaseForm user={user} voteCashbook={voteCashbook} onSave={addRelease} />}
         {view === "cashbook"  && <CashbookLedger cb={cb} stations={stations} />}
         {view === "votebook"  && <VotebookRecords voteCashbook={voteCashbook} stations={stations} voteItems={voteItems} />}
         {view === "allocate"  && user.role === "admin" && <AllocationForm stations={stations} onSave={addAllocation} />}
@@ -1438,7 +1780,7 @@ export default function App() {
         {view === "users"     && user.role === "admin" && (
           <UsersAdmin token={token!} user={user} />
         )}
-        {view === "summary"   && user.role === "admin" && <SummaryReport cb={cb} />}
+        {view === "summary"   && user.role === "admin" && <SummaryReport cb={cb} voteCashbook={voteCashbook} />}
         {view === "history"   && <PeriodHistory token={token!} />}
       </div>
     </div>

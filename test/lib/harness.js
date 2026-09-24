@@ -76,6 +76,8 @@ function sslFor(connectionString) {
 }
 // ── Test database + API process ────────────────────────────────────────────
 
+// Rebuilds a *fresh* test database from the current schema on every suite run,
+// so security tests never inherit columns or data from an older migration.
 async function ensureTestDatabase() {
   if (!/^[a-z_][a-z0-9_]{0,40}$/.test(TEST_DB_NAME)) {
     throw new Error(
@@ -97,14 +99,9 @@ async function ensureTestDatabase() {
     )
   }
   try {
-    const found = await client.query(
-      "SELECT 1 FROM pg_database WHERE datname = $1",
-      [TEST_DB_NAME],
-    )
-    if (found.rowCount === 0) {
-      await client.query(`CREATE DATABASE "${TEST_DB_NAME}"`)
-      console.log(`[harness] created test database "${TEST_DB_NAME}"`)
-    }
+    await client.query(`DROP DATABASE IF EXISTS "${TEST_DB_NAME}"`)
+    await client.query(`CREATE DATABASE "${TEST_DB_NAME}"`)
+    console.log(`[harness] rebuilt fresh test database "${TEST_DB_NAME}"`)
   } finally {
     await client.end()
   }
@@ -342,20 +339,103 @@ export async function insertUserDirect(
   return result.rows[0]
 }
 
+// Resets the open accounting period to a clean slate: no bank entries, no
+// station allocations, no utilizations and no releases. The opening balance now
+// lives on the open period (`cashbook_settings` is legacy and unused).
 export async function resetCashbook(db, openingBalance = 0) {
-  await db.query("TRUNCATE cashbook_entries RESTART IDENTITY")
   await db.query(
-    "UPDATE cashbook_settings SET opening_balance = $1 WHERE id = 1",
+    "TRUNCATE vote_expenditures, vote_utilizations, vote_allocations, cashbook_entries RESTART IDENTITY",
+  )
+  await db.query(
+    "UPDATE accounting_periods SET opening_bank_balance = $1 WHERE status = 'open'",
     [openingBalance.toFixed(2)],
   )
 }
 
+// Cash in Bank = the open period's opening balance + every credit − every release.
 export async function currentBalance(db) {
   const result = await db.query(
-    `SELECT (SELECT opening_balance FROM cashbook_settings WHERE id = 1)
+    `SELECT COALESCE((SELECT opening_bank_balance FROM accounting_periods WHERE status = 'open' ORDER BY id DESC LIMIT 1), 0)
           + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries), 0) AS balance`,
   )
   return Number(result.rows[0].balance)
+}
+
+// ── Votebook flow fixtures: allocate → utilize → release ───────────────────
+
+export async function allocateToStation(api, adminToken, fields = {}) {
+  const res = await api.post(
+    "/api/vote-allocations",
+    {
+      station: "Mkoani",
+      amount: "1000.00",
+      description: "Test allocation",
+      ...fields,
+    },
+    { token: adminToken },
+  )
+  if (res.status !== 201) {
+    throw new Error(
+      `Fixture allocateToStation failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+    )
+  }
+  return res.body.allocation
+}
+
+export async function utilizeFunds(api, token, fields = {}) {
+  const res = await api.post(
+    "/api/vote-utilizations",
+    {
+      station: "Mkoani",
+      voteCode: "22002101",
+      amount: "100.00",
+      description: "Test utilization",
+      ...fields,
+    },
+    { token },
+  )
+  if (res.status !== 201) {
+    throw new Error(
+      `Fixture utilizeFunds failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+    )
+  }
+  return res.body.utilization
+}
+
+export async function releaseVote(api, token, fields = {}) {
+  const res = await api.post(
+    "/api/vote-releases",
+    {
+      amount: "100.00",
+      payee: "Supplier Ltd",
+      purpose: "Unit test payment",
+      ...fields,
+    },
+    { token },
+  )
+  if (res.status !== 201) {
+    throw new Error(
+      `Fixture releaseVote failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+    )
+  }
+  return res.body
+}
+
+// Convenience chain: funds a station and earmarks part of it to a vote item, so
+// a test can go straight to the release step.
+export async function fundStation(
+  api,
+  adminToken,
+  officerToken,
+  {
+    station = "Mkoani",
+    voteCode = "22002101",
+    allocated = "1000.00",
+    utilized = "100.00",
+  } = {},
+) {
+  await allocateToStation(api, adminToken, { station, amount: allocated })
+  return utilizeFunds(api, officerToken, { station, voteCode, amount: utilized })
 }
 
 export function uniqueUsername(prefix) {

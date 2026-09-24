@@ -39,7 +39,9 @@ after(async () => {
 const PROTECTED_ENDPOINTS = [
   ["GET", "/api/bootstrap"],
   ["GET", "/api/cashbook"],
-  ["POST", "/api/cashbook/payments"],
+  ["GET", "/api/vote-cashbook"],
+  ["POST", "/api/vote-utilizations"],
+  ["POST", "/api/vote-releases"],
   ["POST", "/api/cashbook/credits"],
   ["PUT", "/api/cashbook/opening-balance"],
   ["GET", "/api/users"],

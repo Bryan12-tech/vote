@@ -38,6 +38,7 @@ export interface CashbookEntry {
   purpose: string
   receiptNo: string
   cashbookRef: string
+  utilizationRef: string
   debit: number
   credit: number
   balance: number
@@ -67,8 +68,9 @@ export interface VoteAllocation {
 export interface VoteExpenditure {
   id: string
   timestamp: string
-  allocationId: number
-  allocationReference: string
+  allocationId: number | null
+  utilizationId: number | null
+  utilizationReference: string
   station: string
   subVote: string
   voteCode: string
@@ -83,9 +85,36 @@ export interface VoteExpenditure {
   officerName: string
 }
 
+/** Stage 2: station funds earmarked against a vote item (no bank movement yet). */
+export interface VoteUtilization {
+  id: number
+  reference: string
+  timestamp: string
+  station: string
+  subVote: string
+  voteCode: string
+  voteDescription: string
+  amount: number
+  released: number
+  remaining: number
+  description: string
+  officer: string
+  officerName: string
+}
+
+export interface VoteTotals {
+  allocated: number
+  utilized: number
+  unutilized: number
+  released: number
+  unreleased: number
+}
+
 export interface VoteCashbookState {
   allocations: VoteAllocation[]
+  utilizations: VoteUtilization[]
   expenditures: VoteExpenditure[]
+  totals?: VoteTotals
   period?: { key: string; startsOn: string; endsOn: string }
 }
 
@@ -98,9 +127,17 @@ export interface AccountingPeriod {
   bankMovement: number
 }
 
-export interface PaymentPayload {
-  allocationId: number
+/** Stage 2 — earmark station funds against a vote item (no bank movement). */
+export interface UtilizationPayload {
+  station: string
   voteCode: string
+  amount: string
+  description: string
+}
+
+/** Stage 3 — the actual payment; this is what debits Cash in Bank. */
+export interface ReleasePayload {
+  utilizationId: number
   amount: string
   payee: string
   purpose: string
@@ -207,8 +244,17 @@ export const api = {
   accountingPeriod: (token: string, key: string) =>
     request<{ cashbook: CashbookState; voteCashbook: VoteCashbookState }>(`/api/accounting-periods/${encodeURIComponent(key)}`, { token }),
 
-  addPayment: (token: string, payload: PaymentPayload) =>
-    request<VoteCashbookState & { expenditure: VoteExpenditure; openingBalance?: number; entries?: CashbookEntry[]; entry?: CashbookEntry }>("/api/cashbook/payments", {
+  // Stage 2 — utilize station funds against a vote item (does not move the bank).
+  addUtilization: (token: string, payload: UtilizationPayload) =>
+    request<VoteCashbookState & { utilization: VoteUtilization }>("/api/vote-utilizations", {
+      method: "POST",
+      token,
+      body: JSON.stringify(payload),
+    }),
+
+  // Stage 3 — release/spend a utilized vote; this is what debits Cash in Bank.
+  addRelease: (token: string, payload: ReleasePayload) =>
+    request<VoteCashbookState & { expenditure: VoteExpenditure; entry: CashbookEntry }>("/api/vote-releases", {
       method: "POST",
       token,
       body: JSON.stringify(payload),
@@ -236,7 +282,7 @@ export const api = {
     }),
 
   closeAccountingPeriod: (token: string) =>
-    request<{ closed: { key: string; bankBalance: number; carriedAllocations: number }; current: { key: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
+    request<{ closed: { key: string; bankBalance: number; carriedAllocations: number; carriedUtilizations: number }; current: { key: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
       method: "POST",
       token,
     }),

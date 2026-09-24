@@ -72,8 +72,8 @@ CREATE TABLE IF NOT EXISTS cashbook_entries (
 
 CREATE INDEX IF NOT EXISTS idx_cashbook_entries_id ON cashbook_entries (id);
 
--- Vote cashbook: allocations are transfers from the bank's available funds
--- into a station/vote, while expenditures are the later use of those funds.
+-- Vote cashbook: allocations transfer general bank funds to a station. Vote items
+-- are selected only when those station funds are utilized in stage 2.
 CREATE TABLE IF NOT EXISTS vote_allocations (
   id SERIAL PRIMARY KEY,
   allocation_ref TEXT UNIQUE NOT NULL,
@@ -178,3 +178,64 @@ UPDATE stations SET sub_vote = CASE name
   ELSE sub_vote
 END;
 ALTER TABLE vote_items DROP COLUMN IF EXISTS sub_vote;
+
+-- Allocations are station-level. Remove the briefly added allocation-level vote
+-- fields so a vote item is introduced only by a utilization.
+ALTER TABLE vote_allocations DROP COLUMN IF EXISTS vote_code;
+ALTER TABLE vote_allocations DROP COLUMN IF EXISTS vote_description;
+
+-- ── Reservation layer: utilize → release ───────────────────────────────────
+--
+-- A votebook entry is no longer the final spend. The votebook now works in
+-- three stages, and only the last one moves money out of the bank:
+--
+--   1. allocate — funds a station (money the station holds, still in the bank)
+--   2. utilize  — earmarks part of those station funds against a vote item
+--   3. release  — the actual payment; this is what debits Cash in Bank
+--
+-- `vote_utilizations` is stage 2. `vote_expenditures` stays the ledger of real
+-- payments (stage 3) and now points at the utilization it discharges.
+CREATE TABLE IF NOT EXISTS vote_utilizations (
+  id SERIAL PRIMARY KEY,
+  utilization_ref TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  period_id INTEGER NOT NULL REFERENCES accounting_periods(id),
+  station TEXT NOT NULL REFERENCES stations(name),
+  sub_vote TEXT NOT NULL DEFAULT '',
+  vote_code TEXT NOT NULL REFERENCES vote_items(code),
+  vote_description TEXT NOT NULL DEFAULT '',
+  amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  description TEXT NOT NULL DEFAULT '',
+  officer TEXT NOT NULL,
+  officer_name TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vote_utilizations_station ON vote_utilizations (station);
+CREATE INDEX IF NOT EXISTS idx_vote_utilizations_period ON vote_utilizations (period_id);
+
+ALTER TABLE vote_expenditures
+  ADD COLUMN IF NOT EXISTS utilization_id INTEGER REFERENCES vote_utilizations(id);
+ALTER TABLE cashbook_entries
+  ADD COLUMN IF NOT EXISTS utilization_ref TEXT NOT NULL DEFAULT '';
+
+-- A release draws on the station's pooled funds (oldest allocation first), so
+-- the per-allocation link is derived rather than required.
+ALTER TABLE vote_expenditures ALTER COLUMN allocation_id DROP NOT NULL;
+
+-- Backfill: entries posted before the reservation layer existed become released
+-- payments against a matching utilization, so old vouchers keep their history.
+INSERT INTO vote_utilizations
+  (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
+   amount, description, officer, officer_name, created_at)
+SELECT 'VU-LEGACY-' || e.id, e.period_id, e.station, e.sub_vote, e.vote_code,
+       e.vote_description, e.amount, 'Released before the utilization step existed',
+       e.officer, e.officer_name, e.created_at
+FROM vote_expenditures e
+WHERE e.utilization_id IS NULL
+ON CONFLICT (utilization_ref) DO NOTHING;
+
+UPDATE vote_expenditures e
+   SET utilization_id = u.id
+  FROM vote_utilizations u
+ WHERE u.utilization_ref = 'VU-LEGACY-' || e.id
+   AND e.utilization_id IS NULL;
