@@ -672,13 +672,34 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
       "SELECT opening_bank_balance + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries WHERE period_id = $1), 0) AS balance FROM accounting_periods WHERE id = $1",
       [period.id],
     )).rows[0].balance)
-    const next = (await client.query(
+    const nextKeyResult = await client.query(
+      `SELECT to_char(($1::date + interval '1 day'), 'YYYY-MM') AS period_key`,
+      [period.starts_on],
+    )
+    const nextKey = nextKeyResult.rows[0].period_key
+    // A deployment can have the next month already present (for example after a
+    // previous close was interrupted after the period insert). Reuse that period
+    // instead of attempting a second INSERT into accounting_periods.
+    await client.query(
       `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
        VALUES (to_char(($1::date + interval '1 day'), 'YYYY-MM'), $1::date + interval '1 day',
                ($1::date + interval '2 months - 1 day')::date, 'open', $2)
-       RETURNING *`,
+       ON CONFLICT (period_key) DO NOTHING`,
       [period.starts_on, bank.toFixed(2)],
+    )
+    const next = (await client.query(
+      "SELECT * FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
+      [nextKey],
     )).rows[0]
+    if (next.status !== "open") {
+      throw new HttpError(409, `${nextKey} is already closed. Open the next accounting period before carrying forward balances.`)
+    }
+    // If the target period was created by an earlier partial attempt, do not
+    // duplicate its station carry-forward rows.
+    if (next.opening_bank_balance !== bank) {
+      await client.query("UPDATE accounting_periods SET opening_bank_balance = $1 WHERE id = $2", [bank.toFixed(2), next.id])
+      next.opening_bank_balance = bank
+    }
     const carry = await client.query(
       `SELECT a.station, MAX(a.sub_vote) AS sub_vote, SUM(a.amount) AS allocated,
               COALESCE((SELECT SUM(e.amount) FROM vote_expenditures e
@@ -692,6 +713,13 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     for (const row of carry.rows) {
       const remaining = Number(row.allocated) - Number(row.released)
       if (remaining <= 0) continue
+      const alreadyCarried = (await client.query(
+        `SELECT 1 FROM vote_allocations
+         WHERE period_id = $1 AND station = $2 AND reference = $3
+         LIMIT 1`,
+        [next.id, row.station, `Carry-forward from ${period.period_key}`],
+      )).rowCount
+      if (alreadyCarried) continue
       await client.query(
         `INSERT INTO vote_allocations
           (allocation_ref, station, sub_vote, amount, reference, description, officer, officer_name, period_id)
@@ -714,6 +742,14 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     for (const u of openUtilizations.rows) {
       const remaining = Number(u.remaining)
       if (remaining <= 0) continue
+      const alreadyCarried = (await client.query(
+        `SELECT 1 FROM vote_utilizations
+         WHERE period_id = $1 AND station = $2 AND vote_code = $3
+           AND description = $4
+         LIMIT 1`,
+        [next.id, u.station, u.vote_code, `Un-released balance carried forward from ${period.period_key}`],
+      )).rowCount
+      if (alreadyCarried) continue
       await client.query(
         `INSERT INTO vote_utilizations
           (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
