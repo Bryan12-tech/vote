@@ -411,6 +411,17 @@ describe("stage separation (only a release moves Cash in Bank)", () => {
       "the release did not debit the bank",
     )
     assert.equal(await countRows("cashbook_entries"), 1)
+
+    const releasedState = (await api.get("/api/vote-cashbook", { token: officerToken })).body
+    assert.equal(releasedState.utilizations[0].remaining, 0, "the released utilization is no longer available")
+    assert.equal(releasedState.totals.unreleased, 0, "the release is reflected in the vote totals")
+    assert.deepEqual(releasedState.totals, {
+      allocated: 400,
+      utilized: 250,
+      unutilized: 150,
+      released: 250,
+      unreleased: 0,
+    })
   })
 
   it("refuses to allocate more than the money ever paid into the bank", async () => {

@@ -1064,6 +1064,8 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
   const utilizations = voteCashbook.utilizations
 
   // Per-station view of the three stages: allocated → utilized → released.
+  // The station "available" amount is money that can still be earmarked; it is
+  // intentionally separate from the amount awaiting payment after utilization.
   const stationRows = useMemo(() => {
     const map = new Map<string, { station: string; subVote: string; allocated: number; utilized: number; released: number }>()
     for (const a of voteCashbook.allocations) {
@@ -1095,7 +1097,7 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
         {[
           ["Allocated", totals.allocated, "#1e40af"],
           ["Utilized to Votes", totals.utilized, "#b45309"],
-          ["Unutilized", totals.unutilized, "#0f766e"],
+          ["Unutilized (Available to Earmark)", totals.unutilized, "#0f766e"],
           ["Released / Paid", totals.released, "#991b1b"],
           ["Utilized, Not Released", totals.unreleased, "#92400e"],
         ].map(([label, value, color]) => (
