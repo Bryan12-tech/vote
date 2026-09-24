@@ -615,6 +615,11 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
 
+    const requestedKey = asString(req.body?.periodKey).trim()
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(requestedKey)) {
+      throw new HttpError(400, "Enter an accounting month in YYYY-MM format.")
+    }
+
     const current = (await client.query(
       "SELECT * FROM accounting_periods WHERE status = 'open' ORDER BY starts_on DESC LIMIT 1 FOR UPDATE",
     )).rows[0]
@@ -628,6 +633,16 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     if (!latest) {
       throw new HttpError(409, "There is no accounting period to carry forward.")
     }
+    if (requestedKey <= latest.period_key) {
+      throw new HttpError(400, `The new period must be after the latest period, ${latest.period_key}.`)
+    }
+    const existing = (await client.query(
+      "SELECT period_key FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
+      [requestedKey],
+    )).rows[0]
+    if (existing) {
+      throw new HttpError(409, `${requestedKey} already exists in the period history and cannot be opened again.`)
+    }
 
     const balance = Number((await client.query(
       `SELECT opening_bank_balance
@@ -637,15 +652,10 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     )).rows[0].balance)
     const period = (await client.query(
       `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
-       VALUES (to_char($1::date + interval '1 day', 'YYYY-MM'), $1::date + interval '1 day',
-               ($1::date + interval '2 months - 1 day')::date, 'open', $2)
-       ON CONFLICT (period_key) DO NOTHING
+       VALUES ($1, $2::date, ($2::date + interval '1 month - 1 day')::date, 'open', $3)
        RETURNING *`,
-      [latest.starts_on, balance.toFixed(2)],
+      [requestedKey, `${requestedKey}-01`, balance.toFixed(2)],
     )).rows[0]
-    if (!period) {
-      throw new HttpError(409, "The next accounting period already exists. Check the period history before opening another period.")
-    }
     await client.query("COMMIT")
     res.status(201).json({
       period: {

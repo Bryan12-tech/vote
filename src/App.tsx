@@ -1295,7 +1295,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   onTopUp: (p: CreditPayload) => Promise<CashbookEntry>
   onSetOpening: (amount: number) => Promise<void>
   onClosePeriod: () => Promise<string>
-  onOpenNextPeriod: () => Promise<string>
+  onOpenNextPeriod: (periodKey: string) => Promise<string>
 }) {
   const [mode, setMode] = useState<"topup" | "opening">("topup")
   const [amount, setAmount] = useState("")
@@ -1306,6 +1306,10 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   const [err, setErr] = useState("")
   const [closing, setClosing] = useState(false)
   const [opening, setOpening] = useState(false)
+  const [periodToOpen, setPeriodToOpen] = useState(() => {
+    const current = new Date()
+    return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}`
+  })
 
   const bal = currentBalance(cb)
 
@@ -1358,7 +1362,7 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
   async function handleOpenNextPeriod() {
     setErr(""); setOpening(true)
     try {
-      setSuccess(await onOpenNextPeriod())
+      setSuccess(await onOpenNextPeriod(periodToOpen))
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Failed to open the next accounting period.")
     } finally {
@@ -1394,9 +1398,13 @@ function TopUpForm({ cb, user, onTopUp, onSetOpening, onClosePeriod, onOpenNextP
             <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Open Accounting Period</div>
             <div className="font-mono font-semibold text-[#1a2744]">{cb.period?.key || "Current month"}</div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-[#4b5d84]">
+              <span className="block font-mono text-[9px] uppercase tracking-widest mb-1">New period (month)</span>
+              <input type="month" value={periodToOpen} onChange={e => setPeriodToOpen(e.target.value)} className="gov-input" />
+            </label>
             <button type="button" onClick={handleOpenNextPeriod} disabled={opening || closing} className="gov-btn-secondary">
-              {opening ? "Opening…" : "Open Next Period"}
+              {opening ? "Opening…" : "Open Period"}
             </button>
             <button type="button" onClick={handleClosePeriod} disabled={closing || opening} className="gov-btn-secondary">
               {closing ? "Closing…" : "Close Month & Carry Forward"}
@@ -1744,10 +1752,10 @@ export default function App() {
     setCb(await api.setOpeningBalance(token!, amount))
   }
 
-  async function openNextPeriod(): Promise<string> {
-    const result = await api.openNextAccountingPeriod(token!)
+  async function openNextPeriod(periodKey: string): Promise<string> {
+    const result = await api.openNextAccountingPeriod(token!, periodKey)
     setDataTick(t => t + 1)
-    return `${result.period.period_key} opened. Opening balance: ${CUR} ${fmtMoney(result.period.openingBankBalance)}.`
+    return `${result.period.key} opened. Opening balance: ${CUR} ${fmtMoney(result.period.openingBankBalance)}.`
   }
 
   async function closePeriod(): Promise<string> {
