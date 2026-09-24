@@ -413,20 +413,47 @@ app.post("/api/vote-utilizations", auth, async (req, res, next) => {
       throw new HttpError(400, `Insufficient station funds. ${station} has TSh ${money(available)} still unutilized.`)
     }
 
-    const utilizationRef = genRef("VU")
-    const r = await client.query(
-      `INSERT INTO vote_utilizations
-         (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
-          amount, description, officer, officer_name)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        RETURNING *`,
-      [utilizationRef, period.id, station, stationRow.sub_vote, vote.code, vote.description,
-        amount.toFixed(2), descriptionText, req.user.username, req.user.name],
-    )
+    // Repeated utilization for the same station, vote and purpose is additive.
+    // Keep one live bucket so the UI and releases do not show competing records.
+    const existing = (await client.query(
+      `SELECT u.*, COALESCE((
+         SELECT SUM(e.amount) FROM vote_expenditures e
+         WHERE e.utilization_id = u.id
+       ), 0) AS released
+       FROM vote_utilizations u
+       WHERE u.period_id = $1 AND u.station = $2 AND u.vote_code = $3
+         AND u.description = $4
+       ORDER BY u.id
+       LIMIT 1
+       FOR UPDATE`,
+      [period.id, station, vote.code, descriptionText],
+    )).rows[0]
+    const utilizationRef = existing ? existing.utilization_ref : genRef("VU")
+    const r = existing
+      ? (await client.query(
+          `UPDATE vote_utilizations
+           SET amount = amount + $1::numeric, officer = $2, officer_name = $3
+           WHERE id = $4
+           RETURNING vote_utilizations.*,
+             COALESCE((
+               SELECT SUM(e.amount) FROM vote_expenditures e
+               WHERE e.utilization_id = vote_utilizations.id
+             ), 0) AS released`,
+          [amount.toFixed(2), req.user.username, req.user.name, existing.id],
+        )).rows[0]
+      : (await client.query(
+          `INSERT INTO vote_utilizations
+             (utilization_ref, period_id, station, sub_vote, vote_code, vote_description,
+              amount, description, officer, officer_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING *, 0::numeric AS released`,
+          [utilizationRef, period.id, station, stationRow.sub_vote, vote.code, vote.description,
+            amount.toFixed(2), descriptionText, req.user.username, req.user.name],
+        )).rows[0]
     await client.query("COMMIT")
-    res.status(201).json({
+    res.status(existing ? 200 : 201).json({
       ...(await getVoteCashbookState(null, client)),
-      utilization: rowToUtilization({ ...r.rows[0], released: 0 }),
+      utilization: rowToUtilization(r),
     })
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
@@ -792,8 +819,8 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     }
     const carry = await client.query(
       `SELECT a.station, MAX(a.sub_vote) AS sub_vote, SUM(a.amount) AS allocated,
-              COALESCE((SELECT SUM(e.amount) FROM vote_expenditures e
-                         WHERE e.period_id = $1 AND e.station = a.station), 0) AS released
+              COALESCE((SELECT SUM(u.amount) FROM vote_utilizations u
+                         WHERE u.period_id = $1 AND u.station = a.station), 0) AS utilized
        FROM vote_allocations a
        WHERE a.period_id = $1
        GROUP BY a.station`,
@@ -801,7 +828,7 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     )
     let carriedAllocations = 0
     for (const row of carry.rows) {
-      const remaining = Number(row.allocated) - Number(row.released)
+      const remaining = Number(row.allocated) - Number(row.utilized)
       if (remaining <= 0) continue
       const alreadyCarried = (await client.query(
         `SELECT 1 FROM vote_allocations
@@ -837,7 +864,7 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
          WHERE period_id = $1 AND station = $2 AND vote_code = $3
            AND description = $4
          LIMIT 1`,
-        [next.id, u.station, u.vote_code, `Un-released balance carried forward from ${period.period_key}`],
+        [next.id, u.station, u.vote_code, u.description],
       )).rowCount
       if (alreadyCarried) continue
       await client.query(
@@ -846,7 +873,7 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
            amount, description, officer, officer_name)
               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [genRef("VU"), next.id, u.station, u.sub_vote, u.vote_code, u.vote_description,
-          remaining.toFixed(2), `Un-released balance carried forward from ${period.period_key}`,
+          remaining.toFixed(2), u.description,
           req.user.username, req.user.name],
       )
       carriedUtilizations++

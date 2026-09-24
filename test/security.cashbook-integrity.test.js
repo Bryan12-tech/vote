@@ -252,7 +252,10 @@ describe("release validation (stage 3)", () => {
   it("is not vulnerable to SQL injection in the free-text fields", async () => {
     await allocateToStation(api, adminToken, { amount: "1000.00" })
     for (const value of ["'; DROP TABLE users; --", "' OR 1=1 --"]) {
-      const utilization = await utilizeFunds(api, officerToken, { amount: "100.00" })
+      const utilization = await utilizeFunds(api, officerToken, {
+        amount: "100.00",
+        description: `Petrol ${value}`,
+      })
       const res = await release({
         utilizationId: utilization.id,
         payee: value,
@@ -456,7 +459,10 @@ describe("ledger integrity", () => {
   it("keeps every entry balance equal to the recomputed running total", async () => {
     await allocateToStation(api, adminToken, { amount: "1000.00" })
     for (const amount of ["100.00", "250.50", "49.50"]) {
-      const u = await utilizeFunds(api, officerToken, { amount })
+      const u = await utilizeFunds(api, officerToken, {
+        amount,
+        description: `Utilization ${amount}`,
+      })
       assert.equal((await release({ utilizationId: u.id })).status, 201)
     }
     const state = (await api.get("/api/cashbook", { token: officerToken })).body
@@ -569,11 +575,11 @@ describe("concurrency (advisory lock)", () => {
     const results = await Promise.all(
       Array.from({ length: 20 }, () => utilize({ amount: "100.00" })),
     )
-    const created = results.filter((res) => res.status === 201)
+    const accepted = results.filter((res) => res.status === 201 || res.status === 200)
     assert.equal(
-      created.length,
+      accepted.length,
       10,
-      `expected exactly 10 accepted utilizations, got ${created.length}`,
+      `expected exactly 10 accepted utilizations, got ${accepted.length}`,
     )
     for (const res of results.filter((r) => r.status === 400))
       assert.match(String(res.body.error), /Insufficient station funds/i)
@@ -591,6 +597,56 @@ describe("concurrency (advisory lock)", () => {
 })
 
 describe("documented behaviour", () => {
+  it("adds repeated utilization for the same station, vote and purpose to one balance", async () => {
+    await allocateToStation(api, adminToken, { amount: "1000.00" })
+    const first = await utilizeFunds(api, officerToken, {
+      amount: "600.00",
+      description: "Petrol for boat",
+    })
+    const second = await utilizeFunds(api, officerToken, {
+      amount: "200.00",
+      description: "Petrol for boat",
+    })
+    const otherPurpose = await utilizeFunds(api, officerToken, {
+      amount: "100.00",
+      description: "Maintenance for boat",
+    })
+
+    assert.equal(second.id, first.id)
+    assert.equal(second.amount, 800)
+    assert.notEqual(otherPurpose.id, first.id)
+
+    const state = (await api.get("/api/vote-cashbook", { token: officerToken })).body
+    assert.equal(state.utilizations.length, 2)
+    assert.equal(state.utilizations[0].remaining, 800)
+    assert.equal(state.utilizations[1].remaining, 100)
+  })
+
+
+  it("carries unutilized station funds and keeps the original purpose for the next period", async () => {
+    await allocateToStation(api, adminToken, { amount: "100.00" })
+    const first = await utilizeFunds(api, officerToken, {
+      amount: "20.00",
+      description: "Petrol for boat",
+    })
+    const paid = await release({ utilizationId: first.id, amount: "10.00" })
+    assert.equal(paid.status, 201)
+    const today = (await ctx.db.query("SELECT CURRENT_DATE::text AS today")).rows[0].today
+    const closed = await api.post("/api/accounting-periods/close", { closeDate: today }, { token: adminToken })
+    assert.equal(closed.status, 200)
+
+    const carried = await utilizeFunds(api, officerToken, {
+      amount: "10.00",
+      description: "Petrol for boat",
+    })
+    assert.equal(carried.id, (await ctx.db.query(
+      "SELECT id FROM vote_utilizations WHERE period_id = (SELECT id FROM accounting_periods WHERE status = 'open') AND description = 'Petrol for boat'",
+    )).rows[0].id)
+    assert.equal(carried.amount, 20)
+    assert.equal(carried.released, 0)
+    assert.equal(carried.remaining, 20)
+  })
+
   it("stores amounts with two decimal places", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "10.50",

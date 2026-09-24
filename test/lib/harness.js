@@ -394,7 +394,7 @@ export async function utilizeFunds(api, token, fields = {}) {
     },
     { token },
   )
-  if (res.status !== 201) {
+  if (res.status !== 201 && res.status !== 200) {
     throw new Error(
       `Fixture utilizeFunds failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
     )
