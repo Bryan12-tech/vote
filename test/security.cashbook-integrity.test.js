@@ -62,8 +62,8 @@ const utilize = (overrides = {}, token = officerToken) =>
     { token },
   )
 
-// Stage 3 — pay a utilized vote at its fixed utilization price; the only step
-// that debits Cash in Bank. There is intentionally no amount in this payload.
+// Stage 3 — pay a utilized vote, optionally in part; the only step that
+// debits Cash in Bank. A missing amount keeps full-remaining release compatibility.
 const release = (overrides = {}, token = officerToken) =>
   api.post(
     "/api/vote-releases",
@@ -221,23 +221,26 @@ describe("release validation (stage 3)", () => {
     assert.equal(res.body.entry.receiptNo, "789")
   })
 
-  it("rejects a client-supplied release amount and otherwise pays the fixed utilization price", async () => {
+  it("accepts a partial release amount and prevents releasing more than the remaining balance", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "100.00",
     })
-    const attempted = await release({ utilizationId: u.id, amount: "1.00" })
-    assert.equal(attempted.status, 400)
-    assert.match(String(attempted.body.error), /amount is fixed during Utilize to Vote/i)
-    assert.equal(await countRows("vote_expenditures"), 0)
-    assert.equal(await currentBalance(ctx.db), OPENING)
+    const partial = await release({ utilizationId: u.id, amount: "40.00" })
+    assert.equal(partial.status, 201)
+    assert.equal(partial.body.expenditure.amount, 40)
+    assert.equal(partial.body.entry.debit, 40)
+    assert.equal(await currentBalance(ctx.db), OPENING - 40)
 
-    const res = await release({ utilizationId: u.id })
-    assert.equal(res.status, 201)
-    assert.equal(res.body.expenditure.amount, 100)
-    assert.equal(res.body.entry.debit, 100)
+    const over = await release({ utilizationId: u.id, amount: "60.01" })
+    assert.equal(over.status, 400)
+    assert.match(String(over.body.error), /exceeds the remaining utilization balance/i)
+
+    const remainder = await release({ utilizationId: u.id, amount: "60.00" })
+    assert.equal(remainder.status, 201)
+    assert.equal(remainder.body.expenditure.amount, 60)
     assert.equal(await currentBalance(ctx.db), OPENING - 100)
 
-    const repeat = await release({ utilizationId: u.id })
+    const repeat = await release({ utilizationId: u.id, amount: "0.01" })
     assert.equal(repeat.status, 400)
     assert.match(String(repeat.body.error), /already been released and paid in full/i)
 
@@ -525,7 +528,7 @@ describe("ledger integrity", () => {
 })
 
 describe("concurrency (advisory lock)", () => {
-  it("serialises concurrent releases so only one fixed-price payment is created", async () => {
+  it("serialises concurrent releases so only one bounded payment is created", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "1000.00",
     })

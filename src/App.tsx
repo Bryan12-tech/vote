@@ -712,6 +712,7 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
 }) {
   const [filterStation, setFilterStation] = useState("all")
   const [utilizationId, setUtilizationId] = useState<number | null>(null)
+  const [amount, setAmount] = useState("")
   const [payee, setPayee] = useState("")
   const [purpose, setPurpose] = useState("")
   const [voucherNo, setVoucherNo] = useState("")
@@ -724,18 +725,22 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
   const open = voteCashbook.utilizations.filter(u => u.remaining > 0)
   const visible = filterStation === "all" ? open : open.filter(u => u.station === filterStation)
   const selected = open.find(u => u.id === utilizationId)
-  const fixedPrice = selected?.amount ?? 0
+  const remainingPrice = selected?.remaining ?? 0
   const stationsWithVotes = [...new Set(open.map(u => u.station))]
 
   function pick(u: VoteUtilization) {
     setUtilizationId(u.id)
+    setAmount(u.remaining.toFixed(2))
     setErrors({})
     setSuccess(null)
   }
 
   function validate() {
     const e: Record<string, string> = {}
+    const releaseAmount = Number(amount)
     if (!selected) e.utilization = "Please select a utilized vote to release"
+    if (!amount || !Number.isFinite(releaseAmount) || releaseAmount <= 0) e.amount = "Enter a valid release amount greater than zero"
+    else if (releaseAmount > remainingPrice) e.amount = `Release amount cannot exceed TSh ${fmtMoney(remainingPrice)}`
     if (!payee.trim()) e.payee = "Payee name is required"
     if (!purpose.trim()) e.purpose = "Purpose / description is required"
     setErrors(e)
@@ -749,6 +754,7 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
     try {
       const res = await onSave({
         utilizationId: selected.id,
+        amount,
         payee: payee.trim(),
         purpose: purpose.trim(),
         voucherNo: voucherNo.trim(),
@@ -756,7 +762,7 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
         cashbookRef: cashbookRef.trim(),
       })
       setSuccess({ id: res.expenditure.id, amount: res.expenditure.amount, bankBalance: res.entry.balance })
-      setUtilizationId(null); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
+      setUtilizationId(null); setAmount(""); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
     } catch (err) {
       setErrors(p => ({ ...p, form: err instanceof Error ? err.message : "Failed to release the vote." }))
     } finally {
@@ -825,22 +831,26 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
           <h2 className="font-serif font-bold text-[#1a2744] mb-3">Post the Payment</h2>
           <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
             <div>
-              <label htmlFor="fixed-release-price" className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Fixed Utilized Price / Pay Amount
+              <label htmlFor="release-amount" className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Release Amount <span className="text-red-500">*</span>
               </label>
               <input
-                id="fixed-release-price"
-                type="text"
-                value={selected ? `${CUR} ${fmtMoney(fixedPrice)}` : ""}
-                readOnly
-                disabled
-                aria-describedby="fixed-release-price-help"
-                className="gov-input bg-[#f4f7fc] text-[#1a2744] font-mono font-semibold cursor-not-allowed"
-                placeholder="Select a utilized vote to display its fixed price"
+                id="release-amount"
+                type="number"
+                min="0.01"
+                max={remainingPrice}
+                step="0.01"
+                className={`gov-input ${errors.amount ? "gov-input-error" : ""}`}
+                value={amount}
+                onChange={e => { setAmount(e.target.value); setErrors(p => ({ ...p, amount: "" })) }}
+                disabled={!selected}
+                placeholder={selected ? "0.00" : "Select a utilized vote first"}
+                aria-describedby="release-amount-help"
               />
-              <p id="fixed-release-price-help" className="font-sans text-[11px] text-[#8a96af] mt-1">
-                This amount is fixed during Utilize to Vote and cannot be changed here.
+              <p id="release-amount-help" className="font-sans text-[11px] text-[#8a96af] mt-1">
+                Enter any amount up to the remaining utilized balance. You can release part now and the rest later.
               </p>
+              {errors.amount && <p className="font-sans text-xs text-red-600 mt-1">{errors.amount}</p>}
             </div>
 
             <div>
@@ -886,7 +896,7 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
                 <p className="font-sans text-xs text-[#8a96af]">
                   Releasing as <strong className="text-[#1a2744]">{user.name}</strong>
                 </p>
-                <p className="font-sans text-xs text-[#8a96af]">Debits Cash in Bank using the fixed utilized price</p>
+                <p className="font-sans text-xs text-[#8a96af]">Debits Cash in Bank by the amount entered above</p>
               </div>
               <button type="submit" className="gov-btn-gold" disabled={releasing}>{releasing ? "Releasing / Paying…" : "Release / Pay"}</button>
             </div>

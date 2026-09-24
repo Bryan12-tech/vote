@@ -138,6 +138,7 @@ export interface UtilizationPayload {
 /** Stage 3 — the actual payment; this is what debits Cash in Bank. */
 export interface ReleasePayload {
   utilizationId: number
+  amount: string
   payee: string
   purpose: string
   voucherNo: string
@@ -251,7 +252,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  // Stage 3 — release/pay the fixed price recorded during utilization.
+  // Stage 3 — release/pay an amount from a utilization, up to its remaining balance.
   addRelease: (token: string, payload: ReleasePayload) =>
     request<VoteCashbookState & { expenditure: VoteExpenditure; entry: CashbookEntry }>("/api/vote-releases", {
       method: "POST",

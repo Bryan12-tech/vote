@@ -438,15 +438,16 @@ app.post("/api/vote-utilizations", auth, async (req, res, next) => {
 
 // ── Stage 3: release / pay a utilized vote ─────────────────────────────────
 //
-// The utilization amount is the fixed authorized price. This final step always
-// pays that price in full; a client-supplied amount cannot alter the payment.
+// A release may pay part or all of the utilized amount, but it can never exceed
+// the utilization's remaining balance.
 app.post("/api/vote-releases", auth, async (req, res, next) => {
   const client = await pool.connect()
   try {
     const utilizationId = Number(req.body?.utilizationId)
-    const { payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
-    if (Object.hasOwn(req.body || {}, "amount")) {
-      throw new HttpError(400, "Release amount is fixed during Utilize to Vote and cannot be changed.")
+    const { amount: requestedAmount, payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
+    const amount = asNumber(requestedAmount)
+    if (requestedAmount !== undefined && (!Number.isFinite(amount) || amount <= 0)) {
+      throw new HttpError(400, "Enter a valid release amount greater than zero.")
     }
     if (!Number.isInteger(utilizationId) || utilizationId <= 0) throw new HttpError(400, "Please select a utilized vote to release.")
     const payeeName = asString(payee).trim()
@@ -473,9 +474,12 @@ app.post("/api/vote-releases", auth, async (req, res, next) => {
     if (remaining <= 0) {
       throw new HttpError(400, "This vote has already been released and paid in full.")
     }
-    // Release always pays the fixed utilization price. The route rejects any
-    // client-supplied amount before the transaction begins.
-    const amt = remaining
+    // A missing amount remains supported for existing API clients and means
+    // "release the full remaining balance"; the UI always sends an explicit amount.
+    const amt = requestedAmount === undefined ? remaining : amount
+    if (amt > remaining) {
+      throw new HttpError(400, `Release amount exceeds the remaining utilization balance of TSh ${money(remaining)}.`)
+    }
 
     const vote = (await client.query("SELECT item, sub_item FROM vote_items WHERE code = $1", [utilization.vote_code])).rows[0]
 
