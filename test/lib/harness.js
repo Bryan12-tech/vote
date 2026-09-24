@@ -406,7 +406,6 @@ export async function releaseVote(api, token, fields = {}) {
   const res = await api.post(
     "/api/vote-releases",
     {
-      amount: "100.00",
       payee: "Supplier Ltd",
       purpose: "Unit test payment",
       ...fields,

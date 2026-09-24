@@ -344,7 +344,6 @@ describe("error hygiene", () => {
       "/api/vote-releases",
       {
         utilizationId: utilization.id,
-        amount: "1.00",
         payee: payload,
         purpose: payload,
       },

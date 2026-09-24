@@ -436,19 +436,19 @@ app.post("/api/vote-utilizations", auth, async (req, res, next) => {
   }
 })
 
-// ── Stage 3: release / spend a utilized vote ──────────────────────────────
+// ── Stage 3: release / pay a utilized vote ─────────────────────────────────
 //
-// The last step, and the only votebook action that debits Cash in Bank: the
-// voucher is paid, so the money actually leaves the bank. A utilization can be
-// released in several payments until its utilized amount is exhausted.
+// The utilization amount is the fixed authorized price. This final step always
+// pays that price in full; a client-supplied amount cannot alter the payment.
 app.post("/api/vote-releases", auth, async (req, res, next) => {
   const client = await pool.connect()
   try {
     const utilizationId = Number(req.body?.utilizationId)
-    const amt = asNumber(req.body?.amount)
     const { payee, purpose, voucherNo, receiptNo, cashbookRef } = req.body || {}
+    if (Object.hasOwn(req.body || {}, "amount")) {
+      throw new HttpError(400, "Release amount is fixed during Utilize to Vote and cannot be changed.")
+    }
     if (!Number.isInteger(utilizationId) || utilizationId <= 0) throw new HttpError(400, "Please select a utilized vote to release.")
-    if (!Number.isFinite(amt) || amt <= 0) throw new HttpError(400, "Enter a valid amount greater than zero.")
     const payeeName = asString(payee).trim()
     if (!payeeName) throw new HttpError(400, "Payee name is required.")
     const purposeText = asString(purpose).trim()
@@ -470,9 +470,12 @@ app.post("/api/vote-releases", auth, async (req, res, next) => {
       [utilization.id],
     )).rows[0].total)
     const remaining = Number(utilization.amount) - alreadyReleased
-    if (amt > remaining) {
-      throw new HttpError(400, `Insufficient utilized funds. Available to release: TSh ${money(remaining)}`)
+    if (remaining <= 0) {
+      throw new HttpError(400, "This vote has already been released and paid in full.")
     }
+    // Release always pays the fixed utilization price. The route rejects any
+    // client-supplied amount before the transaction begins.
+    const amt = remaining
 
     const vote = (await client.query("SELECT item, sub_item FROM vote_items WHERE code = $1", [utilization.vote_code])).rows[0]
 

@@ -702,7 +702,7 @@ function UtilizeForm({ user, voteItems, stations, voteCashbook, onSave }: {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// STEP 3 — RELEASE / SPEND A UTILIZED VOTE (the final step)
+// STEP 3 — RELEASE / PAY A UTILIZED VOTE (the final step)
 // Shows the votes a station has already utilized and posts the actual payment.
 // This is the only votebook action that debits Cash in Bank.
 // ══════════════════════════════════════════════════════════════════════════
@@ -712,7 +712,6 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
 }) {
   const [filterStation, setFilterStation] = useState("all")
   const [utilizationId, setUtilizationId] = useState<number | null>(null)
-  const [amount, setAmount] = useState("")
   const [payee, setPayee] = useState("")
   const [purpose, setPurpose] = useState("")
   const [voucherNo, setVoucherNo] = useState("")
@@ -725,22 +724,18 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
   const open = voteCashbook.utilizations.filter(u => u.remaining > 0)
   const visible = filterStation === "all" ? open : open.filter(u => u.station === filterStation)
   const selected = open.find(u => u.id === utilizationId)
-  const remaining = selected?.remaining ?? 0
-  const amt = Number(amount) || 0
+  const fixedPrice = selected?.amount ?? 0
   const stationsWithVotes = [...new Set(open.map(u => u.station))]
 
   function pick(u: VoteUtilization) {
     setUtilizationId(u.id)
-    setAmount(u.remaining.toString())
     setErrors({})
     setSuccess(null)
   }
 
   function validate() {
     const e: Record<string, string> = {}
-    if (!selected) e.amount = "Please select a utilized vote to release"
-    if (!amount || isNaN(amt) || amt <= 0) e.amount = "Enter a valid amount greater than zero"
-    if (amt > remaining) e.amount = `Insufficient utilized funds. Available: TSh ${fmtMoney(remaining)}`
+    if (!selected) e.utilization = "Please select a utilized vote to release"
     if (!payee.trim()) e.payee = "Payee name is required"
     if (!purpose.trim()) e.purpose = "Purpose / description is required"
     setErrors(e)
@@ -754,7 +749,6 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
     try {
       const res = await onSave({
         utilizationId: selected.id,
-        amount,
         payee: payee.trim(),
         purpose: purpose.trim(),
         voucherNo: voucherNo.trim(),
@@ -762,9 +756,9 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
         cashbookRef: cashbookRef.trim(),
       })
       setSuccess({ id: res.expenditure.id, amount: res.expenditure.amount, bankBalance: res.entry.balance })
-      setUtilizationId(null); setAmount(""); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
+      setUtilizationId(null); setPayee(""); setPurpose(""); setVoucherNo(""); setReceiptNo(""); setCashbookRef("")
     } catch (err) {
-      setErrors(p => ({ ...p, amount: err instanceof Error ? err.message : "Failed to release the vote." }))
+      setErrors(p => ({ ...p, form: err instanceof Error ? err.message : "Failed to release the vote." }))
     } finally {
       setReleasing(false)
     }
@@ -830,21 +824,23 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
         <div>
           <h2 className="font-serif font-bold text-[#1a2744] mb-3">Post the Payment</h2>
           <form onSubmit={handleSubmit} className="gov-card p-6 space-y-5">
-            <div className="px-4 py-3" style={{ background: "#f4f7fc", border: "1px solid #d1d9e6", borderRadius: "2px" }}>
-              <div className="font-mono text-[9px] text-[#8a96af] uppercase tracking-widest">Selected Vote</div>
-              <div className="font-sans text-sm font-semibold text-[#1a2744] mt-1">
-                {selected ? `${selected.station} · ${selected.voteDescription}` : "— none selected —"}
-              </div>
-              <div className="font-mono text-xs text-emerald-700 mt-1">Available to release: {CUR} {fmtMoney(remaining)}</div>
-            </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
-                Amount to Release (TSh) <span className="text-red-500">*</span>
+              <label htmlFor="fixed-release-price" className="block text-xs font-semibold uppercase tracking-widest text-[#4b5d84] mb-1.5">
+                Fixed Utilized Price / Pay Amount
               </label>
-              <input type="number" min="0.01" step="0.01" className={`gov-input ${errors.amount ? "gov-input-error" : ""}`}
-                value={amount} onChange={e => { setAmount(e.target.value); setErrors(p => ({ ...p, amount: "" })) }}
-                placeholder="0.00" />
-              {errors.amount && <p className="font-sans text-xs text-red-600 mt-1">{errors.amount}</p>}
+              <input
+                id="fixed-release-price"
+                type="text"
+                value={selected ? `${CUR} ${fmtMoney(fixedPrice)}` : ""}
+                readOnly
+                disabled
+                aria-describedby="fixed-release-price-help"
+                className="gov-input bg-[#f4f7fc] text-[#1a2744] font-mono font-semibold cursor-not-allowed"
+                placeholder="Select a utilized vote to display its fixed price"
+              />
+              <p id="fixed-release-price-help" className="font-sans text-[11px] text-[#8a96af] mt-1">
+                This amount is fixed during Utilize to Vote and cannot be changed here.
+              </p>
             </div>
 
             <div>
@@ -890,7 +886,7 @@ function ReleaseForm({ user, voteCashbook, onSave }: {
                 <p className="font-sans text-xs text-[#8a96af]">
                   Releasing as <strong className="text-[#1a2744]">{user.name}</strong>
                 </p>
-                <p className="font-sans text-xs text-[#8a96af]">Debits Cash in Bank · partial releases allowed</p>
+                <p className="font-sans text-xs text-[#8a96af]">Debits Cash in Bank using the fixed utilized price</p>
               </div>
               <button type="submit" className="gov-btn-gold" disabled={releasing}>{releasing ? "Releasing / Paying…" : "Release / Pay"}</button>
             </div>

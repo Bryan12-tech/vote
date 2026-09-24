@@ -92,7 +92,6 @@ describe("officer sessions", () => {
     assert.equal(utilization.officer, DEMO_OFFICER.username)
     const res = await releaseVote(api, officerToken, {
       utilizationId: utilization.id,
-      amount: "100.00",
     })
     assert.equal(res.expenditure.station, "Mkoani")
     assert.equal(res.entry.station, "Mkoani")

@@ -62,12 +62,12 @@ const utilize = (overrides = {}, token = officerToken) =>
     { token },
   )
 
-// Stage 3 — pay a utilized vote; the only step that debits Cash in Bank.
+// Stage 3 — pay a utilized vote at its fixed utilization price; the only step
+// that debits Cash in Bank. There is intentionally no amount in this payload.
 const release = (overrides = {}, token = officerToken) =>
   api.post(
     "/api/vote-releases",
     {
-      amount: "100.00",
       payee: "Supplier Ltd",
       purpose: "Unit test payment",
       ...overrides,
@@ -221,16 +221,25 @@ describe("release validation (stage 3)", () => {
     assert.equal(res.body.entry.receiptNo, "789")
   })
 
-  it("allows partial releases until the utilized amount is exhausted", async () => {
+  it("rejects a client-supplied release amount and otherwise pays the fixed utilization price", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "100.00",
     })
-    assert.equal((await release({ utilizationId: u.id, amount: "40.00" })).status, 201)
-    assert.equal((await release({ utilizationId: u.id, amount: "60.00" })).status, 201)
-    const over = await release({ utilizationId: u.id, amount: "0.01" })
-    assert.equal(over.status, 400)
-    assert.match(String(over.body.error), /Insufficient utilized funds/i)
+    const attempted = await release({ utilizationId: u.id, amount: "1.00" })
+    assert.equal(attempted.status, 400)
+    assert.match(String(attempted.body.error), /amount is fixed during Utilize to Vote/i)
+    assert.equal(await countRows("vote_expenditures"), 0)
+    assert.equal(await currentBalance(ctx.db), OPENING)
+
+    const res = await release({ utilizationId: u.id })
+    assert.equal(res.status, 201)
+    assert.equal(res.body.expenditure.amount, 100)
+    assert.equal(res.body.entry.debit, 100)
     assert.equal(await currentBalance(ctx.db), OPENING - 100)
+
+    const repeat = await release({ utilizationId: u.id })
+    assert.equal(repeat.status, 400)
+    assert.match(String(repeat.body.error), /already been released and paid in full/i)
 
     const state = (await api.get("/api/vote-cashbook", { token: officerToken })).body
     assert.equal(state.utilizations[0].released, 100)
@@ -238,11 +247,11 @@ describe("release validation (stage 3)", () => {
   })
 
   it("is not vulnerable to SQL injection in the free-text fields", async () => {
-    const u = await fundStation(api, adminToken, officerToken)
+    await allocateToStation(api, adminToken, { amount: "1000.00" })
     for (const value of ["'; DROP TABLE users; --", "' OR 1=1 --"]) {
+      const utilization = await utilizeFunds(api, officerToken, { amount: "100.00" })
       const res = await release({
-        utilizationId: u.id,
-        amount: "1.00",
+        utilizationId: utilization.id,
         payee: value,
         purpose: value,
       })
@@ -395,7 +404,7 @@ describe("stage separation (only a release moves Cash in Bank)", () => {
       unreleased: 250,
     })
 
-    await releaseVote(api, officerToken, { utilizationId: u.id, amount: "250.00" })
+    await releaseVote(api, officerToken, { utilizationId: u.id })
     assert.equal(
       await currentBalance(ctx.db),
       OPENING - 250,
@@ -418,7 +427,7 @@ describe("stage separation (only a release moves Cash in Bank)", () => {
   it("keeps allocation capacity intact after a release (released money stays allocated)", async () => {
     await allocateToStation(api, adminToken, { amount: "1000.00" })
     const u = await utilizeFunds(api, officerToken, { amount: "1000.00" })
-    await releaseVote(api, officerToken, { utilizationId: u.id, amount: "400.00" })
+    await releaseVote(api, officerToken, { utilizationId: u.id })
     // 1000 paid into the bank − 1000 already allocated = nothing left to allocate.
     const res = await api.post(
       "/api/vote-allocations",
@@ -432,9 +441,9 @@ describe("stage separation (only a release moves Cash in Bank)", () => {
 describe("ledger integrity", () => {
   it("keeps every entry balance equal to the recomputed running total", async () => {
     await allocateToStation(api, adminToken, { amount: "1000.00" })
-    const u = await utilizeFunds(api, officerToken, { amount: "400.00" })
     for (const amount of ["100.00", "250.50", "49.50"]) {
-      assert.equal((await release({ utilizationId: u.id, amount })).status, 201)
+      const u = await utilizeFunds(api, officerToken, { amount })
+      assert.equal((await release({ utilizationId: u.id })).status, 201)
     }
     const state = (await api.get("/api/cashbook", { token: officerToken })).body
     assert.equal(state.openingBalance, OPENING)
@@ -461,24 +470,25 @@ describe("ledger integrity", () => {
     )
   })
 
-  it("refuses an over-release and leaves the ledger untouched", async () => {
+  it("refuses to release the same utilization twice and leaves the ledger untouched", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "100.00",
     })
-    const over = await release({ utilizationId: u.id, amount: "100.01" })
-    assert.equal(over.status, 400)
-    assert.match(String(over.body.error), /Insufficient utilized funds/i)
-    assert.equal(await countRows("cashbook_entries"), 0)
-    assert.equal(await countRows("vote_expenditures"), 0)
-    assert.equal(await currentBalance(ctx.db), OPENING)
+    assert.equal((await release({ utilizationId: u.id })).status, 201)
+    const repeat = await release({ utilizationId: u.id })
+    assert.equal(repeat.status, 400)
+    assert.match(String(repeat.body.error), /already been released and paid in full/i)
+    assert.equal(await countRows("cashbook_entries"), 1)
+    assert.equal(await countRows("vote_expenditures"), 1)
+    assert.equal(await currentBalance(ctx.db), OPENING - 100)
   })
 
   it("only lets credits make additional spending possible", async () => {
     await allocateToStation(api, adminToken, { amount: "1000.00" })
     const u = await utilizeFunds(api, officerToken, { amount: "1000.00" })
-    assert.equal((await release({ utilizationId: u.id, amount: "1000.00" })).status, 201)
+    assert.equal((await release({ utilizationId: u.id })).status, 201)
     assert.equal(await currentBalance(ctx.db), 0)
-    assert.equal((await release({ utilizationId: u.id, amount: "0.01" })).status, 400)
+    assert.equal((await release({ utilizationId: u.id })).status, 400)
 
     assert.equal(
       (
@@ -492,7 +502,7 @@ describe("ledger integrity", () => {
     )
     assert.equal(await currentBalance(ctx.db), 500)
     // The exhausted utilization stays exhausted; the station was fully utilized.
-    assert.equal((await release({ utilizationId: u.id, amount: "0.01" })).status, 400)
+    assert.equal((await release({ utilizationId: u.id })).status, 400)
     assert.equal((await utilize({ amount: "500.00" })).status, 400)
 
     const totals = await ctx.db.query(
@@ -504,26 +514,22 @@ describe("ledger integrity", () => {
 })
 
 describe("concurrency (advisory lock)", () => {
-  it("serialises concurrent releases so a utilization cannot be over-released", async () => {
+  it("serialises concurrent releases so only one fixed-price payment is created", async () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "1000.00",
     })
     const results = await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
-        release({ utilizationId: u.id, amount: "100.00", payee: `Payee ${i}` }),
+        release({ utilizationId: u.id, payee: `Payee ${i}` }),
       ),
     )
 
     const created = results.filter((res) => res.status === 201)
     const rejected = results.filter((res) => res.status === 400)
-    assert.equal(
-      created.length,
-      10,
-      `expected exactly 10 accepted releases, got ${created.length}`,
-    )
-    assert.equal(rejected.length, 10)
+    assert.equal(created.length, 1, `expected exactly one accepted release, got ${created.length}`)
+    assert.equal(rejected.length, 19)
     for (const res of rejected)
-      assert.match(String(res.body.error), /Insufficient utilized funds/i)
+      assert.match(String(res.body.error), /already been released and paid in full/i)
     for (const res of results)
       assert.ok(
         res.status < 500,
@@ -531,14 +537,11 @@ describe("concurrency (advisory lock)", () => {
       )
 
     const stored = await ctx.db.query(
-      "SELECT balance::text AS balance FROM cashbook_entries ORDER BY id",
+      "SELECT balance::text AS balance, debit::text AS debit FROM cashbook_entries ORDER BY id",
     )
-    assert.equal(stored.rows.length, 10)
-    for (const row of stored.rows)
-      assert.ok(
-        Number(row.balance) >= 0,
-        `negative stored balance ${row.balance}`,
-      )
+    assert.equal(stored.rows.length, 1)
+    assert.equal(stored.rows[0].debit, "1000.00")
+    assert.equal(Number(stored.rows[0].balance), 0)
 
     const totals = await ctx.db.query(
       "SELECT COALESCE(SUM(debit),0)::text AS debits FROM cashbook_entries",
@@ -578,7 +581,7 @@ describe("documented behaviour", () => {
     const u = await fundStation(api, adminToken, officerToken, {
       utilized: "10.50",
     })
-    const res = await release({ utilizationId: u.id, amount: "10.50" })
+    const res = await release({ utilizationId: u.id })
     assert.equal(res.status, 201)
     const row = await ctx.db.query(
       "SELECT debit::text AS debit, balance::text AS balance FROM cashbook_entries WHERE entry_ref = $1",
@@ -599,8 +602,8 @@ describe("documented behaviour", () => {
       station: "Wete",
       amount: "200",
     })
-    assert.equal((await release({ utilizationId: mkoani.id, amount: "100" })).status, 201)
-    assert.equal((await release({ utilizationId: wete.id, amount: "200" })).status, 201)
+    assert.equal((await release({ utilizationId: mkoani.id })).status, 201)
+    assert.equal((await release({ utilizationId: wete.id })).status, 201)
 
     const state = (await api.get("/api/cashbook", { token: officerToken })).body
     assert.equal(state.entries.length, 2)
