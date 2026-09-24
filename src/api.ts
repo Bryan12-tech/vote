@@ -288,10 +288,11 @@ export const api = {
       body: JSON.stringify({ amount }),
     }),
 
-  closeAccountingPeriod: (token: string) =>
-    request<{ closed: { key: string; bankBalance: number; carriedAllocations: number; carriedUtilizations: number }; current: { key: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
+  closeAccountingPeriod: (token: string, closeDate: string) =>
+    request<{ closed: { key: string; closeDate: string; bankBalance: number; carriedAllocations: number; carriedUtilizations: number }; current: { key: string; startsOn: string; openingBankBalance: number } }>("/api/accounting-periods/close", {
       method: "POST",
       token,
+      body: JSON.stringify({ closeDate }),
     }),
 
   // ── System users (admin · Central Finance only) ─────────────────────────

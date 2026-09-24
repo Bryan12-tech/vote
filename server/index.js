@@ -636,6 +636,10 @@ app.post("/api/accounting-periods/open-next", auth, requireCentralFinanceAdmin, 
     if (requestedKey <= latest.period_key) {
       throw new HttpError(400, `The new period must be after the latest period, ${latest.period_key}.`)
     }
+    const requestedStart = `${requestedKey}-01`
+    if (requestedStart <= latest.ends_on) {
+      throw new HttpError(400, `${requestedKey} overlaps the existing period ending ${latest.ends_on}.`)
+    }
     const existing = (await client.query(
       "SELECT period_key FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
       [requestedKey],
@@ -734,37 +738,69 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
     await client.query("BEGIN")
     await client.query("SELECT pg_advisory_xact_lock(913557)")
     const period = await getCurrentPeriod(client)
-    const bank = Number((await client.query(
-      "SELECT opening_bank_balance + COALESCE((SELECT SUM(credit - debit) FROM cashbook_entries WHERE period_id = $1), 0) AS balance FROM accounting_periods WHERE id = $1",
-      [period.id],
-    )).rows[0].balance)
-    const nextKeyResult = await client.query(
-      `SELECT to_char(($1::date + interval '1 day'), 'YYYY-MM') AS period_key`,
-      [period.starts_on],
+    const closeDate = asString(req.body?.closeDate).trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(closeDate)) {
+      throw new HttpError(400, "Enter a valid close date in YYYY-MM-DD format.")
+    }
+    const closeDateCheck = await client.query(
+      "SELECT $1::date BETWEEN starts_on AND ends_on AS valid FROM accounting_periods WHERE id = $2",
+      [closeDate, period.id],
     )
-    const nextKey = nextKeyResult.rows[0].period_key
-    // Look up the target before inserting. This avoids even attempting a duplicate
-    // insert when the target month was created by an earlier close/seed operation.
+    if (!closeDateCheck.rows[0]?.valid) {
+      throw new HttpError(400, `The close date must be between ${period.starts_label} and ${period.ends_label}.`)
+    }
+    const bank = Number((await client.query(
+      `SELECT opening_bank_balance
+         + COALESCE((
+           SELECT SUM(credit - debit) FROM cashbook_entries
+           WHERE period_id = $1 AND created_at::date <= $2::date
+         ), 0) AS balance
+       FROM accounting_periods WHERE id = $1`,
+      [period.id, closeDate],
+    )).rows[0].balance)
+    const nextStart = (await client.query(
+      "SELECT to_char(($1::date + 1), 'YYYY-MM-DD') AS date FROM accounting_periods WHERE id = $2",
+      [closeDate, period.id],
+    )).rows[0].date
+    const nextKey = nextStart
+    // A close can happen on any day, so the next period is identified by its
+    // start date rather than only by its calendar month.
     let next = (await client.query(
-      "SELECT * FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
-      [nextKey],
+      "SELECT * FROM accounting_periods WHERE starts_on = $1 FOR UPDATE",
+      [nextStart],
     )).rows[0]
     if (!next) {
       await client.query(
         `INSERT INTO accounting_periods (period_key, starts_on, ends_on, status, opening_bank_balance)
-         VALUES (to_char(($1::date + interval '1 day'), 'YYYY-MM'), $1::date + interval '1 day',
-                 ($1::date + interval '2 months - 1 day')::date, 'open', $2)
-         ON CONFLICT (period_key) DO NOTHING`,
-        [period.starts_on, bank.toFixed(2)],
+         VALUES ($1, $2::date, ($2::date + interval '1 month - 1 day')::date, 'open', $3)`,
+        [nextKey, nextStart, bank.toFixed(2)],
       )
       next = (await client.query(
-        "SELECT * FROM accounting_periods WHERE period_key = $1 FOR UPDATE",
-        [nextKey],
+        "SELECT * FROM accounting_periods WHERE starts_on = $1 FOR UPDATE",
+        [nextStart],
       )).rows[0]
     }
     if (next.status !== "open") {
       throw new HttpError(409, `${nextKey} is already closed. Open the next accounting period before carrying forward balances.`)
     }
+    // Any entries created after the selected close date belong to the new period.
+    // This is what makes closing on the 9th or another day safe.
+    await client.query(
+      `UPDATE cashbook_entries SET period_id = $1 WHERE period_id = $2 AND created_at::date > $3::date`,
+      [next.id, period.id, closeDate],
+    )
+    await client.query(
+      `UPDATE vote_allocations SET period_id = $1 WHERE period_id = $2 AND created_at::date > $3::date`,
+      [next.id, period.id, closeDate],
+    )
+    await client.query(
+      `UPDATE vote_utilizations SET period_id = $1 WHERE period_id = $2 AND created_at::date > $3::date`,
+      [next.id, period.id, closeDate],
+    )
+    await client.query(
+      `UPDATE vote_expenditures SET period_id = $1 WHERE period_id = $2 AND created_at::date > $3::date`,
+      [next.id, period.id, closeDate],
+    )
     // If the target period was created by an earlier partial attempt, do not
     // duplicate its station carry-forward rows.
     if (next.opening_bank_balance !== bank) {
@@ -832,11 +868,14 @@ app.post("/api/accounting-periods/close", auth, requireCentralFinanceAdmin, asyn
       )
       carriedUtilizations++
     }
-    await client.query("UPDATE accounting_periods SET status = 'closed', closed_at = now() WHERE id = $1", [period.id])
+    await client.query(
+      "UPDATE accounting_periods SET status = 'closed', ends_on = $2::date, closed_at = now() WHERE id = $1",
+      [period.id, closeDate],
+    )
     await client.query("COMMIT")
     res.json({
-      closed: { key: period.period_key, bankBalance: bank, carriedAllocations, carriedUtilizations },
-      current: { key: next.period_key, openingBankBalance: Number(next.opening_bank_balance) },
+      closed: { key: period.period_key, closeDate, bankBalance: bank, carriedAllocations, carriedUtilizations },
+      current: { key: next.period_key, startsOn: next.starts_on, openingBankBalance: Number(next.opening_bank_balance) },
     })
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {})
