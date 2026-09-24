@@ -187,7 +187,7 @@ function Sidebar({ user, view, onView, onLogout, balance }: {
     { id: "dashboard", label: "Dashboard", icon: "⊞" },
     { id: "utilize",   label: "Utilize to Vote", icon: "✦" },
     { id: "release",   label: "Release / Pay Vote", icon: "⇧" },
-    { id: "votebook",  label: "Votebook Cash", icon: "≡" },
+    { id: "votebook",  label: "Votebook Modules", icon: "≡" },
     { id: "cashbook",  label: "Cash in Bank", icon: "⊟" },
     { id: "history",   label: "Period History", icon: "◷" },
     ...(user.role === "admin" ? [
@@ -1086,7 +1086,7 @@ function VotebookRecords({ voteCashbook, stations, voteItems }: { voteCashbook: 
         <div className="font-mono text-[10px] text-[#8a96af] uppercase tracking-widest mb-1">
           Votebook Module · {voteCashbook.period?.key || "current period"}
         </div>
-        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Votebook Cash</h1>
+        <h1 className="font-serif text-2xl font-bold text-[#1a2744]">Votebook Modules</h1>
         <p className="font-sans text-xs text-[#8a96af] mt-1">
           Money held by each station, what has been utilized to vote items, and what has been released (paid out of Cash in Bank).
         </p>
