@@ -430,6 +430,24 @@ describe("stage separation (only a release moves Cash in Bank)", () => {
     })
   })
 
+  it("does not reduce station unutilized funds when a utilized vote is partially released", async () => {
+    await allocateToStation(api, adminToken, { amount: "100.00" })
+    const utilization = await utilizeFunds(api, officerToken, {
+      amount: "50.00",
+      description: "Petrol for boat",
+    })
+    const paid = await release({ utilizationId: utilization.id, amount: "20.00" })
+    assert.equal(paid.status, 201)
+
+    const state = (await api.get("/api/vote-cashbook", { token: officerToken })).body
+    assert.equal(state.totals.allocated, 100)
+    assert.equal(state.totals.utilized, 50)
+    assert.equal(state.totals.released, 20)
+    assert.equal(state.totals.unutilized, 50)
+    assert.equal(state.totals.unreleased, 30)
+    assert.equal(state.allocations[0].remaining, 50)
+  })
+
   it("refuses to allocate more than the money ever paid into the bank", async () => {
     const res = await api.post(
       "/api/vote-allocations",

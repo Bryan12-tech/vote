@@ -1776,7 +1776,7 @@ export default function App() {
     const result = await api.closeAccountingPeriod(token!)
     setDataTick(t => t + 1)
     return {
-      message: `${result.closed.key} closed as of ${result.closed.closeDate}. ${result.closed.carriedAllocations} station fund(s) and ${result.closed.carriedUtilizations} un-released vote(s) carried into ${result.current.key}, starting ${result.current.startsOn} (opening ${CUR} ${fmtMoney(result.current.openingBankBalance)}).`,
+      message: `${result.closed.key} closed as of ${result.closed.closeDate}. ${result.closed.carriedAllocations} station fund(s) and ${result.closed.carriedUtilizations} un-released vote(s) were carried forward. A new accounting period, ${result.current.key}, was opened automatically, starting ${result.current.startsOn} with an opening balance of ${CUR} ${fmtMoney(result.current.openingBankBalance)}.`,
       closedAt: result.closed.closedAt,
     }
   }

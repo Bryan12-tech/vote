@@ -183,18 +183,18 @@ async function getVoteCashbookState(period = null, client = pool) {
     ORDER BY e.id ASC
   `, [period.id])
 
-  // A release draws on the station's pooled funds, oldest allocation first, so
-  // each allocation's "used" is the slice of the station's releases that falls
-  // inside its part of the pool.
-  const releasedByStation = new Map()
-  for (const e of expenditures.rows) {
-    releasedByStation.set(e.station, (releasedByStation.get(e.station) || 0) + Number(e.amount))
+  // Allocation is consumed when a station utilizes funds against a vote item.
+  // A later release is a payment from the already-utilized bucket; it must not
+  // consume the station's unutilized allocation a second time.
+  const utilizedByStation = new Map()
+  for (const u of utilizations.rows) {
+    utilizedByStation.set(u.station, (utilizedByStation.get(u.station) || 0) + Number(u.amount))
   }
   const poolStart = new Map()
   const allocationRows = allocations.rows.map(a => {
-    const stationReleased = releasedByStation.get(a.station) || 0
+    const stationUtilized = utilizedByStation.get(a.station) || 0
     const start = poolStart.get(a.station) || 0
-    const used = Math.max(0, Math.min(Number(a.amount), stationReleased - start))
+    const used = Math.max(0, Math.min(Number(a.amount), stationUtilized - start))
     poolStart.set(a.station, start + Number(a.amount))
     return rowToAllocation(a, used)
   })
