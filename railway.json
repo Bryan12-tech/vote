@@ -1,14 +1,3 @@
-# Railway config — Votebook Management System
-#
-# Railway does not read render.yaml, so the same one-service setup is declared
-# here: one Node service serves the built React frontend AND the Express API
-# from a single process (/api is same-origin, so no CORS is needed).
-#
-# Deploy: New Project → Deploy from GitHub repo → Railway detects this file.
-# Add a PostgreSQL plugin; it injects DATABASE_URL automatically.
-# Set JWT_SECRET as a service variable (any long random string).
-# See https://docs.railway.app/reference/config-as-code
-
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
