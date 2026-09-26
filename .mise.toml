@@ -1,3 +1,7 @@
 [tools]
 node = "22"
-"npm:pnpm" = "10.34.3"
+# pnpm 9.15.9 matches what Railway resolves from pnpm-lock.yaml (lockfileVersion 9.0)
+# and is a version mise's supply-chain trust policy accepts. Newer pnpm 10.x releases
+# are currently rejected by mise with "trust downgrade" errors.
+"npm:pnpm" = "9.15.9"
+
