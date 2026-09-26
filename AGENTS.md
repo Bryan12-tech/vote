@@ -74,6 +74,19 @@ This project uses **Tailwind CSS v4** through the `@tailwindcss/vite` plugin con
 - Remaining hardening work is tracked as `it.todo` entries — see `test/README.md`.
 - When a security test fails, fix the server rule in `server/index.js`, not the expectation.
 
+## Deployment (Railway)
+
+- `railway.json` at the repo root declares the same one-process setup as Render: Nixpacks build
+  (`pnpm build`) and a start command that seeds then runs the Express server.
+- Deploy: Railway dashboard → **New Project → Deploy from GitHub repo**; Railway picks up
+  `railway.json` automatically.
+- Add a **PostgreSQL** plugin to the service — it injects `DATABASE_URL` automatically. The pool in
+  `server/db.js` enables TLS for any non-localhost host, so no other change is needed.
+- Set one service variable: `JWT_SECRET` (long random string, e.g. `openssl rand -hex 32`).
+  Optionally set `NODE_VERSION=22` to match `.mise.toml`.
+- Health check is `GET /api/health`; Railway restarts the service on failure.
+- Railway's public hostname (Settings → Networking → Generate Domain) serves both the UI and `/api`.
+
 ## Deployment (Render free tier)
 
 - `render.yaml` at the repo root is a Render Blueprint: one free web service (serves the built frontend and the API from one process) plus one free PostgreSQL database wired in as `DATABASE_URL`.
