@@ -20,7 +20,7 @@ const USERS = [
 
 async function waitForDb(retries = Number(process.env.DB_READY_RETRIES || 60), delayMs = Number(process.env.DB_READY_DELAY_MS || 5000)) {
   if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is missing. Configure the Render PostgreSQL connection on the web service.")
+    throw new Error("DATABASE_URL is missing. Add a PostgreSQL database to the project and link it to this service (Railway: + New → Database → PostgreSQL; Render: it is wired by render.yaml).")
   }
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -31,7 +31,7 @@ async function waitForDb(retries = Number(process.env.DB_READY_RETRIES || 60), d
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
   }
-  throw new Error(`Database did not become ready after ${retries} attempts. Check DATABASE_URL, database status, and Render network settings.`)
+  throw new Error(`Database did not become ready after ${retries} attempts. Check that DATABASE_URL is set, the database plugin is linked to THIS service, and the database is running.`)
 }
 
 async function main() {
