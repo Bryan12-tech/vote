@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": "22"
+  },
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,green \"node --env-file=server/.env --watch server/index.js\" \"vite\"",
     "server": "node --env-file=server/.env --watch server/index.js",
