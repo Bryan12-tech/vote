@@ -19,9 +19,14 @@ const USERS = [
 ]
 
 async function waitForDb(retries = Number(process.env.DB_READY_RETRIES || 60), delayMs = Number(process.env.DB_READY_DELAY_MS || 5000)) {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is missing. Add a PostgreSQL database to the project and link it to this service (Railway: + New → Database → PostgreSQL; Render: it is wired by render.yaml).")
+  // A blank or whitespace-only DATABASE_URL is a real failure mode on hosted
+  // platforms (the variable can exist but be empty). Trim so a padded value is
+  // treated as missing instead of hanging through the whole retry window.
+  const url = (process.env.DATABASE_URL || "").trim()
+  if (!url) {
+    throw new Error("DATABASE_URL is missing or empty. Add a PostgreSQL database to the project and link it to this service (Railway: + New → Database → PostgreSQL, then right-click the database → Connect → your service; Render: it is wired by render.yaml).")
   }
+  process.env.DATABASE_URL = url
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       await pool.query("SELECT 1")
